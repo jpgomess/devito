@@ -7,7 +7,8 @@ from sympy import symbols, Matrix, ones
 
 class C_Matrix():
 
-    C_matrix_dependency = {'lam-mu': 'C_lambda_mu', 'vp-vs-rho': 'C_vp_vs_rho'}
+    C_matrix_dependency = {'lam-mu': 'C_lambda_mu', 'vp-vs-rho': 'C_vp_vs_rho',
+                           'ip-is-rho': 'C_Ip_Is_rho'}
 
     def __new__(cls, model, parameters):
         c_m_gen = cls.C_matrix_gen(parameters)
@@ -235,6 +236,77 @@ class C_Matrix():
 
         subs = subs3D() if model.dim == 3 else subs2D()
         return Dvs.subs(subs)
+
+    @classmethod
+    def C_Ip_Is_rho(cls, model):
+        def subs3D():
+            return {'C11': Ip*vp,
+                    'C22': Ip*vp,
+                    'C33': Ip*vp,
+                    'C44': Is*vs,
+                    'C55': Is*vs,
+                    'C66': Is*vs,
+                    'C12': Ip*vp - 2*Is*vs,
+                    'C13': Ip*vp - 2*Is*vs,
+                    'C23': Ip*vp - 2*Is*vs}
+
+        def subs2D():
+            return {'C11': Ip*vp,
+                    'C22': Ip*vp,
+                    'C33': Is*vs,
+                    'C12': Ip*vp - 2*Is*vs}
+
+        matrix = cls._matrix_init(model.dim)
+        vp = model.vp
+        vs = model.vs
+        rho = model.rho
+        Is = rho*vs
+        Ip = rho*vp
+
+        subs = subs3D() if model.dim == 3 else subs2D()
+        M = matrix.subs(subs)
+
+        M.dIs = cls._generate_DIs(model)
+        M.dIp = cls._generate_DIp(model)
+
+        return M
+
+    @staticmethod
+    def _generate_DIs(model):
+        def d_Is(i, j):
+            ii, jj = min(i, j), max(i, j)
+            if (ii <= model.dim and jj <= model.dim):
+                return model.vp
+            return 0
+
+        d = model.dim*2 + model.dim-2
+        D_Is = [[d_Is(i, j) for i in range(1, d)] for j in range(1, d)]
+        return Matrix(D_Is)
+
+    @staticmethod
+    def _generate_DIp(model):
+        def subs3D():
+            return {'C11': 0,
+                    'C22': 0,
+                    'C33': 0,
+                    'C44': vs,
+                    'C55': vs,
+                    'C66': vs,
+                    'C12': -2*vs,
+                    'C13': -2*vs,
+                    'C23': -2*vs}
+
+        def subs2D():
+            return {'C11': 0,
+                    'C22': 0,
+                    'C33': vs,
+                    'C12': -2*vs}
+
+        D_Ip = C_Matrix._matrix_init(model.dim)
+        vs = model.vs
+
+        subs = subs3D() if model.dim == 3 else subs2D()
+        return D_Ip.subs(subs)
 
 
 def D(self, shift=None):
