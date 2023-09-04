@@ -8,7 +8,7 @@ from sympy import symbols, Matrix, ones
 class C_Matrix():
 
     C_matrix_dependency = {'lam-mu': 'C_lambda_mu', 'vp-vs-rho': 'C_vp_vs_rho',
-                           'ip-is-rho': 'C_Ip_Is_rho'}
+                           'Ip-Is-rho': 'C_Ip_Is_rho'}
 
     def __new__(cls, model, parameters):
         c_m_gen = cls.C_matrix_gen(parameters)
