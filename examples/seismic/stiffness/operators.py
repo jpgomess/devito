@@ -149,6 +149,35 @@ def EqsVpVsRho(model, sig, u, v, grad_vp, grad_vs, grad_rho, C, space_order=8):
     return [wvp_update, gradient_lam, wvs_update, gradient_mu, wr_update, gradient_rho]
 
 
+def EqsIpIs(model, sig, u, v, grad_Ip, grad_Is, grad_rho, C, space_order=8):
+
+    hIp = TimeFunction(name='hIp', grid=model.grid, space_order=space_order,
+                       time_order=1)
+
+    hIs = TimeFunction(name='hIs', grid=model.grid, space_order=space_order,
+                       time_order=1)
+
+    hr = TimeFunction(name='hr', grid=model.grid, space_order=space_order,
+                      time_order=1)
+
+    WIp = gather(0, C.dIp * S(v))
+    WIs = gather(0, C.dIs * S(v))
+    Wr = gather(v.dt, 0)
+
+    W2 = gather(u, sig)
+
+    wIp_update = Eq(hIp, WIp.T * W2)
+    gradient_Ip = Eq(grad_Ip, grad_Ip + hIp)
+
+    wIs_update = Eq(hIs, WIs.T * W2)
+    gradient_Is = Eq(grad_Is, grad_Is + hIs)
+
+    wr_update = Eq(hr, Wr.T * W2)
+    gradient_rho = Eq(grad_rho, grad_rho - hr)
+
+    return [wIp_update, gradient_Ip, wIs_update, gradient_Is, wr_update, gradient_rho]
+
+
 def ForwardOperator(model, geometry, space_order=4, save=False, par='lam-mu', **kwargs):
     """
     Construct method for the forward modelling operator in an elastic media.
@@ -271,4 +300,4 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
                     name='GradientElastic', **kwargs)
 
 
-kernels = {'lam-mu': EqsLamMu, 'vp-vs-rho': EqsVpVsRho}
+kernels = {'lam-mu': EqsLamMu, 'vp-vs-rho': EqsVpVsRho, 'Ip-Is-rho': EqsIpIs}
