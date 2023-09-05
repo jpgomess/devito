@@ -143,6 +143,7 @@ def test_cache_blocking_structure_subdims():
     assert not tree[4].dim.is_Block and tree[4].dim is zi and tree[4].dim.parent is z
 
 
+@skipif(['nompi'])
 @pytest.mark.parallel(mode=[(1, 'full')])  # Shortcut to put loops in nested efuncs
 def test_cache_blocking_structure_distributed():
     """

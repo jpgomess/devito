@@ -474,6 +474,7 @@ class TestDecomposition(object):
         assert d.reshape((1, 3, 10, 11)) == Decomposition([[0], [1], [], [2, 3]], 2)
         assert d.reshape((1, 3, 10, 11, 14)) == Decomposition([[0], [1], [], [2, 3]], 2)
 
+
 @skipif(['nompi'])
 class TestDataDistributed(object):
 

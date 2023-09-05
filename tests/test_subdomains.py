@@ -4,7 +4,7 @@ from math import floor
 
 from sympy import sin, tan
 
-from conftest import opts_tiling, assert_structure
+from conftest import opts_tiling, assert_structure, skipif
 from devito import (ConditionalDimension, Constant, Grid, Function, TimeFunction,
                     Eq, solve, Operator, SubDomain, SubDomainSet)
 from devito.ir import FindNodes, Expression, Iteration
@@ -320,6 +320,7 @@ class TestMultiSubDomain(object):
 
         assert((np.array(f.data[:]+g.data[:]) == expected).all())
 
+    @skipif(['nompi'])
     @pytest.mark.parallel(mode=[(4, 'basic'), (4, 'overlap')])
     def test_subdomainset_mpi(self):
 
