@@ -474,7 +474,7 @@ class TestDecomposition(object):
         assert d.reshape((1, 3, 10, 11)) == Decomposition([[0], [1], [], [2, 3]], 2)
         assert d.reshape((1, 3, 10, 11, 14)) == Decomposition([[0], [1], [], [2, 3]], 2)
 
-
+@skipif(['nompi'])
 class TestDataDistributed(object):
 
     """
@@ -1373,6 +1373,7 @@ class TestDataDistributed(object):
             assert np.all(result[3] == [[3, 2, 1, 0]])
 
 
+@skipif(['nompi'])
 class TestDataGather(object):
 
     @pytest.mark.parallel(mode=4)
