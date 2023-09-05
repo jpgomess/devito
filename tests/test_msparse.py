@@ -5,6 +5,7 @@ import numpy as np
 import scipy.sparse
 
 from devito import Grid, TimeFunction, Eq, Operator, MatrixSparseTimeFunction
+from conftest import skipif
 
 
 class TestMatrixSparseTimeFunction(object):
@@ -335,6 +336,7 @@ class TestMatrixSparseTimeFunction(object):
         assert m.data[0, 39, 40] == pytest.approx(2.0)
         assert m.data[0, 40, 39] == pytest.approx(2.0)
 
+    @skipif(['nompi'])
     @pytest.mark.parallel(mode=4)
     def test_mpi(self):
         # Shape chosen to get a source in multiple ranks
