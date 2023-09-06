@@ -1,6 +1,5 @@
 import pytest
 import numpy as np
-import cupy as cp
 
 from devito import (Grid, Function, TimeFunction, SparseTimeFunction, Dimension, # noqa
                     Eq, Operator, ALLOC_GUARD, ALLOC_FLAT, ALLOC_CUPY,
@@ -9,6 +8,8 @@ from devito.data import LEFT, RIGHT, Decomposition, loc_data_idx, convert_index
 from devito.tools import as_tuple
 from devito.types import Scalar
 from devito.data.allocators import ExternalAllocator
+
+from conftest import skipif
 
 
 class TestDataBasic(object):
@@ -474,6 +475,7 @@ class TestDecomposition(object):
         assert d.reshape((1, 3, 10, 11, 14)) == Decomposition([[0], [1], [], [2, 3]], 2)
 
 
+@skipif(['nompi'])
 class TestDataDistributed(object):
 
     """
@@ -1372,6 +1374,7 @@ class TestDataDistributed(object):
             assert np.all(result[3] == [[3, 2, 1, 0]])
 
 
+@skipif(['nompi'])
 class TestDataGather(object):
 
     @pytest.mark.parallel(mode=4)
@@ -1477,10 +1480,13 @@ class TestDataGather(object):
 
 class TestAllocators(object):
 
+    @skipif('nodevice')
     def test_uma_allocation(self):
         """
         Test Unified Memory allocation.
         """
+        import cupy as cp
+
         nt = 5
         grid = Grid(shape=(4, 4, 4))
 
