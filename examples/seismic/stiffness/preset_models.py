@@ -29,9 +29,9 @@ def demo_model(preset, **kwargs):
         # A constant single-layer model in a 2D or 3D domain
         # with velocity 1.5 km/s.
         vs = 0.5 * vp
-        b = 1.0
+        rho = 1.0
 
-        return ISOSeismicModel(space_order=space_order, vp=vp, vs=vs, b=b,
+        return ISOSeismicModel(space_order=space_order, vp=vp, vs=vs, rho=rho,
                                origin=origin, shape=shape, dtype=dtype, spacing=spacing,
                                nbl=nbl, **kwargs)
 
@@ -51,11 +51,11 @@ def demo_model(preset, **kwargs):
             v[..., i*int(shape[-1] / nlayers):] = vp_i[i]  # Bottom velocity
 
         vs = 0.5 * v[:]
-        b = 1 / (0.31 * (1e3*v)**0.25)
-        b[v < 1.51] = 1.0
+        rho = (0.31 * (1e3*v)**0.25)
+        rho[v < 1.51] = 1.0
         vs[v < 1.51] = 0.0
 
-        return ISOSeismicModel(space_order=space_order, vp=v, vs=vs, b=b,
+        return ISOSeismicModel(space_order=space_order, vp=v, vs=vs, rho=rho,
                                origin=origin, shape=shape,
                                dtype=dtype, spacing=spacing, nbl=nbl, **kwargs)
 

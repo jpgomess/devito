@@ -1,7 +1,6 @@
 from devito.tools import memoized_meth
 from devito import VectorTimeFunction, TensorTimeFunction, Function
 from examples.seismic import PointSource
-from devito.logger import info
 from examples.seismic.stiffness.operators import (ForwardOperator, AdjointOperator,
                                                   GradientOperator)
 
@@ -170,7 +169,7 @@ class IsoElasticWaveSolver(object):
         model = model or self.model
 
         parameters = model.physical_params(**kwargs)
-        
+
         # Pick specifics physical parameters from model unless explicitly provided
         new_p = {k: v for k, v in parameters.items() if k not in remove_par[par]}
         kwargs.update(new_p)
@@ -245,4 +244,6 @@ class IsoElasticWaveSolver(object):
 
         return grad1, grad2, grad3, summary
 
-remove_par = {'lam-mu':['vp', 'vs', 'rho'], 'vp-vs-rho':['lam', 'mu']}
+
+remove_par = {'lam-mu': ['vp', 'vs', 'Ip', 'Is'], 'vp-vs-rho': ['lam', 'mu', 'Ip', 'Is'],
+              'Ip-Is-rho': ['lam', 'mu']}
