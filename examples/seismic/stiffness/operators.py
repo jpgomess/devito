@@ -63,9 +63,8 @@ def src_rec(v, tau, model, geometry, forward=True):
 def elastic_stencil(model, v, tau, forward=True, par='lam-mu'):
 
     damp = model.damp
-    b = model.b
 
-    rho = 1. / b
+    rho = model.rho
 
     C = C_Matrix(model, par)
 
@@ -147,6 +146,35 @@ def EqsVpVsRho(model, sig, u, v, grad_vp, grad_vs, grad_rho, C, space_order=8):
     gradient_rho = Eq(grad_rho, grad_rho - hr)
 
     return [wvp_update, gradient_lam, wvs_update, gradient_mu, wr_update, gradient_rho]
+
+
+def EqsIpIs(model, sig, u, v, grad_Ip, grad_Is, grad_rho, C, space_order=8):
+
+    hIp = TimeFunction(name='hIp', grid=model.grid, space_order=space_order,
+                       time_order=1)
+
+    hIs = TimeFunction(name='hIs', grid=model.grid, space_order=space_order,
+                       time_order=1)
+
+    hr = TimeFunction(name='hr', grid=model.grid, space_order=space_order,
+                      time_order=1)
+
+    WIp = gather(0, C.dIp * S(v))
+    WIs = gather(0, C.dIs * S(v))
+    Wr = gather(v.dt, 0)
+
+    W2 = gather(u, sig)
+
+    wIp_update = Eq(hIp, WIp.T * W2)
+    gradient_Ip = Eq(grad_Ip, grad_Ip + hIp)
+
+    wIs_update = Eq(hIs, WIs.T * W2)
+    gradient_Is = Eq(grad_Is, grad_Is + hIs)
+
+    wr_update = Eq(hr, Wr.T * W2)
+    gradient_rho = Eq(grad_rho, grad_rho - hr)
+
+    return [wIp_update, gradient_Ip, wIs_update, gradient_Is, wr_update, gradient_rho]
 
 
 def ForwardOperator(model, geometry, space_order=4, save=False, par='lam-mu', **kwargs):
@@ -248,7 +276,7 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
                           npoint=geometry.nrec)
 
     s = model.grid.time_dim.spacing
-    b = model.b
+    rho = model.rho
 
     C = C_Matrix(model, par)
 
@@ -260,15 +288,15 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
                              grad3, C, space_order=space_order)
 
     # Construct expression to inject receiver values
-    rec_term_vx = rec_vx.inject(field=u[0].backward, expr=s*rec_vx*b)
-    rec_term_vz = rec_vz.inject(field=u[-1].backward, expr=s*rec_vz*b)
+    rec_term_vx = rec_vx.inject(field=u[0].backward, expr=s*rec_vx/rho)
+    rec_term_vz = rec_vz.inject(field=u[-1].backward, expr=s*rec_vz/rho)
     rec_expr = rec_term_vx + rec_term_vz
     if model.grid.dim == 3:
-        rec_expr += rec_vy.inject(field=u[1].backward, expr=s*rec_vy*b)
+        rec_expr += rec_vy.inject(field=u[1].backward, expr=s*rec_vy/rho)
 
     # Substitute spacing terms to reduce flops
     return Operator(eqn + rec_expr + gradient_update, subs=model.spacing_map,
                     name='GradientElastic', **kwargs)
 
 
-kernels = {'lam-mu': EqsLamMu, 'vp-vs-rho': EqsVpVsRho}
+kernels = {'lam-mu': EqsLamMu, 'vp-vs-rho': EqsVpVsRho, 'Ip-Is-rho': EqsIpIs}
