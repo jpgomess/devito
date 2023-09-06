@@ -13,10 +13,10 @@ on:
     inputs:
       tags:
         description: 'Run ASV'
-  # Trigger the workflow on push to the master branch
+  # Trigger the workflow on push to the main branch
   push:
     branches:
-      - master
+      - main
 
 jobs:
 
@@ -77,7 +77,7 @@ jobs:
         git commit -m "Commit ASV results"
 
     - name: Push benchmarks results to the asv-results branch
-      uses: ad-m/github-push-action@master
+      uses: ad-m/github-push-action@main
       with:
         branch: asv-results
         force: true
