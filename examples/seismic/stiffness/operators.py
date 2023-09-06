@@ -63,9 +63,8 @@ def src_rec(v, tau, model, geometry, forward=True):
 def elastic_stencil(model, v, tau, forward=True, par='lam-mu'):
 
     damp = model.damp
-    b = model.b
 
-    rho = 1. / b
+    rho = model.rho
 
     C = C_Matrix(model, par)
 
@@ -277,7 +276,7 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
                           npoint=geometry.nrec)
 
     s = model.grid.time_dim.spacing
-    b = model.b
+    rho = model.rho
 
     C = C_Matrix(model, par)
 
@@ -289,11 +288,11 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
                              grad3, C, space_order=space_order)
 
     # Construct expression to inject receiver values
-    rec_term_vx = rec_vx.inject(field=u[0].backward, expr=s*rec_vx*b)
-    rec_term_vz = rec_vz.inject(field=u[-1].backward, expr=s*rec_vz*b)
+    rec_term_vx = rec_vx.inject(field=u[0].backward, expr=s*rec_vx/rho)
+    rec_term_vz = rec_vz.inject(field=u[-1].backward, expr=s*rec_vz/rho)
     rec_expr = rec_term_vx + rec_term_vz
     if model.grid.dim == 3:
-        rec_expr += rec_vy.inject(field=u[1].backward, expr=s*rec_vy*b)
+        rec_expr += rec_vy.inject(field=u[1].backward, expr=s*rec_vy/rho)
 
     # Substitute spacing terms to reduce flops
     return Operator(eqn + rec_expr + gradient_update, subs=model.spacing_map,
