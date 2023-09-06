@@ -259,9 +259,8 @@ class C_Matrix():
         matrix = cls._matrix_init(model.dim)
         vp = model.vp
         vs = model.vs
-        rho = model.rho
-        Is = rho*vs
-        Ip = rho*vp
+        Ip = model.Ip
+        Is = model.Is
 
         subs = subs3D() if model.dim == 3 else subs2D()
         M = matrix.subs(subs)
