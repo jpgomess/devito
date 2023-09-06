@@ -245,4 +245,4 @@ class IsoElasticWaveSolver(object):
         return grad1, grad2, grad3, summary
 
 
-remove_par = {'lam-mu': ['vp', 'vs', 'rho', 'Ip', 'Is'], 'vp-vs-rho': ['lam', 'mu', 'Ip', 'Is'], 'Ip-Is-rho': ['lam', 'mu', 'rho']}
+remove_par = {'lam-mu': ['vp', 'vs', 'Ip', 'Is'], 'vp-vs-rho': ['lam', 'mu', 'Ip', 'Is'], 'Ip-Is-rho': ['lam', 'mu']}

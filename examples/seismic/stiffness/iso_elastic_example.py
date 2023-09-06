@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import copy
 from devito import norm
 from devito.logger import info
 from examples.seismic.stiffness import IsoElasticWaveSolver, demo_model
@@ -28,7 +29,9 @@ def run(shape=(50, 50), spacing=(20.0, 20.0), tn=1000.0,
                                space_order=space_order, constant=constant, **kwargs)
     info("Applying Forward")
     # Define receiver geometry (spread across x, just below surface)
-    rec1, rec2, rec3, v, tau, summary = solver.forward(autotune=autotune)[0:6]
+    rho = copy.copy(solver.model.rho)
+    rho.th = 'th'
+    rec1, rec2, rec3, v, tau, summary = solver.forward(autotune=autotune, rho=rho)[0:6]
     return (summary.gflopss, summary.oi, summary.timings,
             [rec1, rec2, rec3, v, tau])
 
