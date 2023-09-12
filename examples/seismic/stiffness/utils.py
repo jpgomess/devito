@@ -271,7 +271,7 @@ class C_Matrix():
         return M
 
     @staticmethod
-    def _generate_DIs(model):
+    def _generate_DIp(model):
         def d_Is(i, j):
             ii, jj = min(i, j), max(i, j)
             if (ii <= model.dim and jj <= model.dim):
@@ -283,7 +283,7 @@ class C_Matrix():
         return Matrix(D_Is)
 
     @staticmethod
-    def _generate_DIp(model):
+    def _generate_DIs(model):
         def subs3D():
             return {'C11': 0,
                     'C22': 0,
