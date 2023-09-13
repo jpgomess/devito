@@ -130,17 +130,17 @@ def EqsVpVsRho(model, sig, u, v, grad_vp, grad_vs, grad_rho, C, space_order=8):
     hr = TimeFunction(name='hr', grid=model.grid, space_order=space_order,
                       time_order=1)
 
-    Wvp = gather(0, C.dvp * S(v))
-    Wvs = gather(0, C.dvs * S(v))
+    Wvp = gather(0, -C.dvp * S(v))
+    Wvs = gather(0, -C.dvs * S(v))
     Wr = gather(v.dt, - C.drho * S(v))
 
     W2 = gather(u, sig)
 
     wvp_update = Eq(hvp, Wvp.T * W2)
-    gradient_lam = Eq(grad_vp, grad_vp + hvp)
+    gradient_lam = Eq(grad_vp, grad_vp - hvp)
 
     wvs_update = Eq(hvs, Wvs.T * W2)
-    gradient_mu = Eq(grad_vs, grad_vs + hvs)
+    gradient_mu = Eq(grad_vs, grad_vs - hvs)
 
     wr_update = Eq(hr, Wr.T * W2)
     gradient_rho = Eq(grad_rho, grad_rho - hr)
