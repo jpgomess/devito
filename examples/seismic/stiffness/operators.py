@@ -130,17 +130,17 @@ def EqsVpVsRho(model, sig, u, v, grad_vp, grad_vs, grad_rho, C, space_order=8):
     hr = TimeFunction(name='hr', grid=model.grid, space_order=space_order,
                       time_order=1)
 
-    Wvp = gather(0, C.dvp * S(v))
-    Wvs = gather(0, C.dvs * S(v))
+    Wvp = gather(0, -C.dvp * S(v))
+    Wvs = gather(0, -C.dvs * S(v))
     Wr = gather(v.dt, - C.drho * S(v))
 
     W2 = gather(u, sig)
 
     wvp_update = Eq(hvp, Wvp.T * W2)
-    gradient_lam = Eq(grad_vp, grad_vp + hvp)
+    gradient_lam = Eq(grad_vp, grad_vp - hvp)
 
     wvs_update = Eq(hvs, Wvs.T * W2)
-    gradient_mu = Eq(grad_vs, grad_vs + hvs)
+    gradient_mu = Eq(grad_vs, grad_vs - hvs)
 
     wr_update = Eq(hr, Wr.T * W2)
     gradient_rho = Eq(grad_rho, grad_rho - hr)
@@ -293,6 +293,14 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
     rec_expr = rec_term_vx + rec_term_vz
     if model.grid.dim == 3:
         rec_expr += rec_vy.inject(field=u[1].backward, expr=s*rec_vy/rho)
+
+    rec_p = kwargs.pop('rec_tau')
+    if rec_p:
+        rec_term_sigx = rec_p.inject(field=sig[0].backward, expr=s*rec_p/rho)
+        rec_term_sigz = rec_p.inject(field=sig[1].backward, expr=s*rec_p/rho)
+        rec_expr += rec_term_sigx + rec_term_sigz
+        if model.grid.dim == 3:
+            rec_expr += rec_p.inject(field=sig[2].backward, expr=rec_p/rho) 
 
     # Substitute spacing terms to reduce flops
     return Operator(eqn + rec_expr + gradient_update, subs=model.spacing_map,
