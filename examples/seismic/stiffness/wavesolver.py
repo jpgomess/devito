@@ -47,10 +47,11 @@ class IsoElasticWaveSolver(object):
                                space_order=self.space_order, par=par, **self._kwargs)
 
     @memoized_meth
-    def op_grad(self, save=True, par=None, rec_tau=None):
+    def op_grad(self, save=True, par=None, has_rec_p=None):
         """Cached operator for gradient runs"""
         return GradientOperator(self.model, save=save, geometry=self.geometry,
-                                space_order=self.space_order, par=par, rec_tau=rec_tau, **self._kwargs)
+                                space_order=self.space_order, par=par,
+                                has_rec_p=has_rec_p, **self._kwargs)
 
     def forward(self, src=None, rec_tau=None, rec_vx=None, rec_vz=None, rec_vy=None,
                 v=None, tau=None, model=None, save=None, par='lam-mu', **kwargs):
@@ -238,10 +239,10 @@ class IsoElasticWaveSolver(object):
         new_p = {k: v for k, v in parameters.items() if k not in remove_par[par]}
         kwargs.update(new_p)
 
-        rec_tau = kwargs.get('rec_tau', None)
-        summary = self.op_grad(par=par, rec_tau=rec_tau).apply(rec_vx=rec_vx, rec_vz=rec_vz, grad1=grad1,
-                                              grad2=grad2, grad3=grad3,
-                                              dt=kwargs.pop('dt', self.dt), **kwargs)
+        has_rec_p = True if kwargs.get('rec_p', None) else None
+        summary = self.op_grad(par=par, has_rec_p=has_rec_p).apply(rec_vx=rec_vx, rec_vz=rec_vz, grad1=grad1,
+                                                                   grad2=grad2, grad3=grad3,
+                                                                   dt=kwargs.pop('dt', self.dt), **kwargs)
 
         return grad1, grad2, grad3, summary
 
