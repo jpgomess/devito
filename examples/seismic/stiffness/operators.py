@@ -206,10 +206,9 @@ def ForwardOperator(model, geometry, space_order=4, save=False, par='lam-mu', **
 
     src_expr, rec_expr = src_rec(v, tau, model, geometry)
 
-    op = Operator(eqn + src_expr + rec_expr, subs=model.spacing_map,
-                  name="ForwardIsoElastic", **kwargs)
     # Substitute spacing terms to reduce flops
-    return op
+    return Operator(eqn + src_expr + rec_expr, subs=model.spacing_map,
+                    name="ForwardIsoElastic", **kwargs)
 
 
 def AdjointOperator(model, geometry, space_order=4, par='lam-mu', **kwargs):
@@ -294,8 +293,9 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
     if model.grid.dim == 3:
         rec_expr += rec_vy.inject(field=u[1].backward, expr=s*rec_vy/rho)
 
-    rec_p = kwargs.pop('rec_tau')
-    if rec_p:
+    if kwargs.pop('has_rec_p'):
+        rec_p = Receiver(name='rec_p', grid=model.grid, time_range=geometry.time_axis,
+                         npoint=geometry.nrec)
         rec_term_sigx = rec_p.inject(field=sig[0].backward, expr=s*rec_p/rho)
         rec_term_sigz = rec_p.inject(field=sig[1].backward, expr=s*rec_p/rho)
         rec_expr += rec_term_sigx + rec_term_sigz
