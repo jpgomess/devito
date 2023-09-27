@@ -32,7 +32,6 @@ jobs:
           tutos-ubuntu-gcc-py37,
           tutos-osx-gcc-py37,
           tutos-osx-clang-py37,
-          tutos-docker-gcc-py37
           ]
 
         include:
