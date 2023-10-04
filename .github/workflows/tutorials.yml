@@ -45,16 +45,6 @@ jobs:
             compiler: gcc-11
             language: "openmp"
 
-          - name: tutos-osx-clang-py37
-            os: macos-latest
-            compiler: clang
-            language: "C"
-
-          - name: tutos-docker-gcc-py37
-            os: ubuntu-latest
-            compiler: gcc
-            language: "openmp"
-
     steps:
     - name: Checkout devito
       uses: actions/checkout@v3
