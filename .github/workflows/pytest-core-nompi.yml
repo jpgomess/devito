@@ -37,9 +37,6 @@ jobs:
            pytest-ubuntu-py38-gcc8-omp,
            pytest-ubuntu-py39-gcc9-omp,
            pytest-osx-py37-clang-omp,
-           pytest-docker-py37-gcc-omp,
-           pytest-docker-py37-icc-omp,
-           pytest-docker-py38-icx-omp
         ]
         set: [base, adjoint]
         include:
@@ -91,27 +88,6 @@ jobs:
           arch: "clang"
           language: "C"
           sympy: "1.9"
-
-        - name: pytest-docker-py37-gcc-omp
-          python-version: '3.7'
-          os: ubuntu-latest
-          arch: "gcc"
-          language: "openmp"
-          sympy: "1.10"
-
-        - name: pytest-docker-py37-icc-omp
-          python-version: '3.7'
-          os: ubuntu-22.04
-          arch: "icc"
-          language: "openmp"
-          sympy: "1.11"
-
-        - name: pytest-docker-py38-icx-omp
-          python-version: '3.8'
-          os: ubuntu-22.04
-          arch: "icx"
-          language: "openmp"
-          sympy: "1.11"
 
         - set: base
           test-set: 'not adjoint'

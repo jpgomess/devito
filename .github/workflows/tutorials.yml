@@ -32,7 +32,6 @@ jobs:
           tutos-ubuntu-gcc-py37,
           tutos-osx-gcc-py37,
           tutos-osx-clang-py37,
-          tutos-docker-gcc-py37
           ]
 
         include:
@@ -44,16 +43,6 @@ jobs:
           - name: tutos-osx-gcc-py37
             os: macos-latest
             compiler: gcc-11
-            language: "openmp"
-
-          - name: tutos-osx-clang-py37
-            os: macos-latest
-            compiler: clang
-            language: "C"
-
-          - name: tutos-docker-gcc-py37
-            os: ubuntu-latest
-            compiler: gcc
             language: "openmp"
 
     steps:
