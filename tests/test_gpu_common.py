@@ -6,9 +6,9 @@ import scipy.sparse
 
 from conftest import assert_structure
 from devito import (Constant, Eq, Inc, Grid, Function, ConditionalDimension,
-                    MatrixSparseTimeFunction, SparseTimeFunction, SubDimension,
-                    SubDomain, SubDomainSet, TimeFunction, Operator, configuration,
-                    switchconfig)
+                    Dimension, MatrixSparseTimeFunction, SparseTimeFunction,
+                    SubDimension, SubDomain, SubDomainSet, TimeFunction,
+                    Operator, configuration, switchconfig)
 from devito.arch import get_gpu_info
 from devito.exceptions import InvalidArgument
 from devito.ir import (Conditional, Expression, Section, FindNodes, FindSymbols,
@@ -25,13 +25,26 @@ class TestGPUInfo(object):
 
     def test_get_gpu_info(self):
         info = get_gpu_info()
-        known = ['nvidia', 'tesla', 'geforce', 'quadro', 'unspecified']
+        known = ['nvidia', 'tesla', 'geforce', 'quadro', 'amd', 'unspecified']
         try:
             assert info['architecture'].lower() in known
         except KeyError:
             # There might be than one GPUs, but for now we don't care
             # as we're not really exploiting this info yet...
-            pass
+            pytest.xfail("Unsupported platform for get_gpu_info")
+
+    def custom_compiler(self):
+        grid = Grid(shape=(4, 4))
+
+        u = TimeFunction(name='u', grid=grid)
+
+        eqn = Eq(u.forward, u + 1)
+
+        with switchconfig(compiler='custom'):
+            op = Operator(eqn)()
+            # Check jit-compilation and correct execution
+            op.apply(time_M=10)
+            assert np.all(u.data[1] == 11)
 
 
 class TestCodeGeneration(object):
@@ -109,6 +122,30 @@ class TestPassesEdgeCases(object):
 
         assert np.all(usave.data[5:] == expected[5:])
         assert np.all(vsave.data[:5] == expected[:5])
+
+    def test_incr_perfect_outer(self):
+        grid = Grid((5, 5))
+        d = Dimension(name="d")
+
+        u = Function(name="u", dimensions=(*grid.dimensions, d),
+                     grid=grid, shape=(*grid.shape, 5), )
+        v = Function(name="v", dimensions=(*grid.dimensions, d),
+                     grid=grid, shape=(*grid.shape, 5))
+        w = Function(name="w", grid=grid)
+
+        u.data.fill(1)
+        v.data.fill(2)
+
+        summation = Inc(w, u*v)
+
+        op = Operator([summation])
+
+        assert 'reduction' not in str(op)
+        assert 'collapse(2)' in str(op)
+        assert 'parallel' in str(op)
+
+        op()
+        assert np.all(w.data == 10)
 
 
 class Bundle(SubDomain):
@@ -220,7 +257,7 @@ class TestStreaming(object):
 
         # Check generated code
         assert len(retrieve_iteration_tree(op)) == 3
-        assert len([i for i in FindSymbols().visit(op) if isinstance(i, Lock)]) == 1 + 2
+        assert len([i for i in FindSymbols().visit(op) if isinstance(i, Lock)]) == 2
         sections = FindNodes(Section).visit(op)
         assert len(sections) == 4
         assert (str(sections[1].body[0].body[0].body[0].body[0]) ==
@@ -412,7 +449,7 @@ class TestStreaming(object):
         assert np.all(u.data[1] == 36)
 
     @pytest.mark.parametrize('opt,ntmps,nfuncs', [
-        (('buffering', 'streaming', 'orchestrate'), 9, 5),
+        (('buffering', 'streaming', 'orchestrate'), 8, 5),
         (('buffering', 'streaming', 'fuse', 'orchestrate', {'fuse-tasks': True}), 6, 5),
     ])
     def test_streaming_two_buffers(self, opt, ntmps, nfuncs):
@@ -576,6 +613,34 @@ class TestStreaming(object):
 
         assert np.all(grad.data == grad1.data)
 
+    def test_streaming_multi_input_conddim_foward(self):
+        nt = 10
+        grid = Grid(shape=(4, 4))
+        time_dim = grid.time_dim
+        x, y = grid.dimensions
+
+        factor = Constant(name='factor', value=2, dtype=np.int32)
+        time_sub = ConditionalDimension(name="time_sub", parent=time_dim, factor=factor)
+
+        u = TimeFunction(name='u', grid=grid, time_order=2, save=nt, time_dim=time_sub)
+        v = TimeFunction(name='v', grid=grid)
+        v1 = TimeFunction(name='v', grid=grid)
+
+        for i in range(u.save):
+            u.data[i, :] = i
+
+        expr = u.dt2 + 3.*u.dt(x0=time_sub - time_sub.spacing)
+
+        eqns = [Eq(v.forward, v + expr + 1.)]
+
+        op0 = Operator(eqns, opt=('noop', {'gpu-fit': u}))
+        op1 = Operator(eqns, opt=('buffering', 'streaming', 'orchestrate'))
+
+        op0.apply(time_M=nt, dt=.01)
+        op1.apply(time_M=nt, dt=.01, v=v1)
+
+        assert np.all(v.data == v1.data)
+
     def test_streaming_multi_input_conddim_backward(self):
         nt = 10
         grid = Grid(shape=(4, 4))
@@ -696,7 +761,7 @@ class TestStreaming(object):
         assert len(retrieve_iteration_tree(op1)) == 8
         assert len(retrieve_iteration_tree(op2)) == 5
         symbols = FindSymbols().visit(op1)
-        assert len([i for i in symbols if isinstance(i, Lock)]) == 1 + 2
+        assert len([i for i in symbols if isinstance(i, Lock)]) == 2
         threads = [i for i in symbols if isinstance(i, PThreadArray)]
         assert len(threads) == 2
         assert threads[0].size.size == async_degree
@@ -817,8 +882,8 @@ class TestStreaming(object):
             assert len(retrieve_iteration_tree(op)) == 5
             assert len([i for i in FindSymbols().visit(op) if isinstance(i, Lock)]) == 1
             sections = FindNodes(Section).visit(op)
-            assert len(sections) == 3
-            assert 'while(lock0[t1] == 0)' in str(sections[1].body[0].body[0].body[0])
+            assert len(sections) == 4
+            assert 'while(lock0[t1] == 0)' in str(sections[2].body[0].body[0].body[0])
 
         op0.apply(time_M=nt-1)
         op1.apply(time_M=nt-1, u=u1, usave=usave1)
@@ -1372,10 +1437,12 @@ class TestEdgeCases(object):
         """
         grid = Grid(shape=(4, 4), extent=(3.0, 3.0))
 
-        f = TimeFunction(name='f', grid=grid, space_order=0)
+        f = TimeFunction(name='f', grid=grid, space_order=1)
         f.data[:] = 1.
         sf1 = SparseTimeFunction(name='sf1', grid=grid, npoint=0, nt=10)
-        sf2 = SparseTimeFunction(name='sf2', grid=grid, npoint=0, nt=10)
+        sf2 = SparseTimeFunction(name='sf2', grid=grid, npoint=0, nt=10,
+                                 coordinates=sf1.coordinates,
+                                 dimensions=sf1.dimensions)
         assert sf1.size == 0
         assert sf2.size == 0
 

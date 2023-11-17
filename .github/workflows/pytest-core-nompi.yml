@@ -30,9 +30,9 @@ jobs:
 
       matrix:
         name: [
-           pytest-ubuntu-py39-gcc11-noomp,
+           pytest-ubuntu-py311-gcc11-noomp,
            pytest-ubuntu-py38-gcc12-omp,
-           pytest-ubuntu-py39-gcc7-omp,
+           pytest-ubuntu-py37-gcc7-omp,
            pytest-ubuntu-py310-gcc10-noomp,
            pytest-ubuntu-py38-gcc8-omp,
            pytest-ubuntu-py39-gcc9-omp,
@@ -40,8 +40,8 @@ jobs:
         ]
         set: [base, adjoint]
         include:
-        - name: pytest-ubuntu-py39-gcc11-noomp
-          python-version: '3.9'
+        - name: pytest-ubuntu-py311-gcc11-noomp
+          python-version: '3.11'
           os: ubuntu-22.04
           arch: "gcc-11"
           language: "C"
@@ -54,8 +54,8 @@ jobs:
           language: "openmp"
           sympy: "1.10"
 
-        - name: pytest-ubuntu-py39-gcc7-omp
-          python-version: '3.9'
+        - name: pytest-ubuntu-py37-gcc7-omp
+          python-version: '3.7'
           os: ubuntu-20.04
           arch: "gcc-7"
           language: "openmp"
@@ -78,7 +78,7 @@ jobs:
         - name: pytest-ubuntu-py39-gcc9-omp
           python-version: '3.9'
           os: ubuntu-20.04
-          arch: "gcc-9"
+          arch: "custom"
           language: "openmp"
           sympy: "1.9"
 
@@ -117,14 +117,14 @@ jobs:
     - name: Set run prefix
       run: |
           if [[ "${{ matrix.name }}" =~ "docker" ]]; then
-              echo "RUN_CMD=docker run --rm -e CODECOV_TOKEN=${{ secrets.CODECOV_TOKEN }} -e DEVITO_ARCH=${{ matrix.arch }} --name testrun devito_img"  >> $GITHUB_ENV
+              echo "RUN_CMD=docker run --rm -e CODECOV_TOKEN=${{ secrets.CODECOV_TOKEN }} --name testrun devito_img"  >> $GITHUB_ENV
           else
               echo "RUN_CMD=" >> $GITHUB_ENV
           fi
       id: set-run
 
     - name: Install ${{ matrix.arch }} compiler
-      if: "runner.os == 'linux' && !contains(matrix.name, 'docker')"
+      if: "runner.os == 'linux' && !contains(matrix.name, 'docker') && matrix.arch !='custom' "
       run : |
         sudo apt-get install -y ${{ matrix.arch }}
 
@@ -144,9 +144,12 @@ jobs:
         pip install -e .[tests]
         pip install sympy==${{matrix.sympy}}
 
+    - name: Check configuration
+      run: |
+        ${{ env.RUN_CMD }} python3 -c "from devito import configuration; print(''.join(['%s: %s \n' % (k, v) for (k, v) in configuration.items()]))"
+
     - name: Test with pytest
       run: |
-        ${{ env.RUN_CMD }} ${{ matrix.arch }} --version
         ${{ env.RUN_CMD }} pytest -k "${{ matrix.test-set }}" -m "not parallel" --cov --cov-config=.coveragerc --cov-report=xml ${{ env.TESTS }}
 
     - name: Upload coverage to Codecov

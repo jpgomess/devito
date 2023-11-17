@@ -10,6 +10,7 @@ import psutil
 import re
 import os
 import sys
+import json
 
 from devito.logger import warning
 from devito.tools import as_tuple, all_equal, memoized_func
@@ -18,15 +19,17 @@ __all__ = ['platform_registry', 'get_cpu_info', 'get_gpu_info', 'get_nvidia_cc',
            'get_cuda_path', 'get_hip_path', 'check_cuda_runtime', 'get_m1_llvm_path',
            'Platform', 'Cpu64', 'Intel64', 'IntelSkylake', 'Amd', 'Arm', 'Power',
            'Device', 'NvidiaDevice', 'AmdDevice', 'IntelDevice',
-           # Intel
+           # Intel CPUs
            'INTEL64', 'SNB', 'IVB', 'HSW', 'BDW', 'KNL', 'KNL7210',
-           'SKX', 'KLX', 'CLX', 'CLK',
-           # ARM
+           'SKX', 'KLX', 'CLX', 'CLK', 'SPR',
+           # ARM CPUs
            'AMD', 'ARM', 'M1', 'GRAVITON',
-           # Other loosely supported CPU architectures
+           # Other legacy CPUs
            'POWER8', 'POWER9',
-           # GPUs
-           'AMDGPUX', 'NVIDIAX', 'INTELGPUX']
+           # Generic GPUs
+           'AMDGPUX', 'NVIDIAX', 'INTELGPUX',
+           # Intel GPUs
+           'PVC']
 
 
 @memoized_func
@@ -242,6 +245,77 @@ def get_gpu_info():
 
             gpu_info['mem.%s' % i] = make_cbk(i)
 
+        return gpu_info
+
+    except OSError:
+        pass
+
+    # *** Second try: `rocm-smi`, clearly only works with AMD cards
+    try:
+        gpu_infos = {}
+
+        # Base gpu info
+        info_cmd = ['rocm-smi', '--showproductname']
+        proc = Popen(info_cmd, stdout=PIPE, stderr=DEVNULL)
+        raw_info = str(proc.stdout.read())
+
+        lines = raw_info.replace('\\n', '\n').replace('b\'', '').replace('\\t', '')
+        lines = lines.splitlines()
+
+        for line in lines:
+            if 'GPU' in line:
+                # Product
+                pattern = r'GPU\[(\d+)\].*?Card series:\s*(.*?)\s*$'
+                match1 = re.match(pattern, line)
+
+                if match1:
+                    gid = match1.group(1)
+                    gpu_infos.setdefault(gid, dict())
+                    gpu_infos[gid]['physicalid'] = gid
+                    gpu_infos[gid]['product'] = match1.group(2)
+
+                # Model
+                pattern = r'GPU\[(\d+)\].*?Card model:\s*(.*?)\s*$'
+                match2 = re.match(pattern, line)
+
+                if match2:
+                    gid = match2.group(1)
+                    gpu_infos.setdefault(gid, dict())
+                    gpu_infos[gid]['physicalid'] = match2.group(1)
+                    gpu_infos[gid]['model'] = match2.group(2)
+
+        gpu_info = homogenise_gpus(list(gpu_infos.values()))
+
+        # Also attach callbacks to retrieve instantaneous memory info
+        info_cmd = ['rocm-smi', '--showmeminfo', 'vram', '--json']
+        proc = Popen(info_cmd, stdout=PIPE, stderr=DEVNULL)
+        raw_info = str(proc.stdout.read())
+        lines = raw_info.replace('\\n', '').replace('b\'', '').replace('\'', '')
+        info = json.loads(lines)
+
+        for i in ['total', 'free', 'used']:
+            def make_cbk(i):
+                def cbk(deviceid=0):
+                    try:
+                        # Should only contain Used and total
+                        assert len(info['card%s' % deviceid]) == 2
+                        used = [int(v) for k, v in info['card%s' % deviceid].items()
+                                if 'Used' in k][0]
+                        total = [int(v) for k, v in info['card%s' % deviceid].items()
+                                 if 'Used' not in k][0]
+                        free = total - used
+                        return {'total': total, 'free': free, 'used': used}[i]
+                    except:
+                        # We shouldn't really end up here, unless nvidia-smi changes
+                        # the output format (though we still have tests in place that
+                        # will catch this)
+                        return None
+
+                return cbk
+
+            gpu_info['mem.%s' % i] = make_cbk(i)
+
+        gpu_infos['architecture'] = 'AMD'
         return gpu_info
 
     except OSError:
@@ -616,7 +690,7 @@ class IntelSkylake(Intel64):
     pass
 
 
-class IntelGoldenCode(Intel64):
+class IntelGoldenCove(Intel64):
     pass
 
 
@@ -638,12 +712,19 @@ class Power(Cpu64):
 
 class Device(Platform):
 
-    def __init__(self, name, cores_logical=1, cores_physical=1, isa='cpp'):
+    def __init__(self, name, cores_logical=1, cores_physical=1, isa='cpp',
+                 max_threads_per_block=1024, max_threads_dimx=1024,
+                 max_threads_dimy=1024, max_threads_dimz=64):
         super().__init__(name)
 
         self.cores_logical = cores_logical
         self.cores_physical = cores_physical
         self.isa = isa
+
+        self.max_threads_per_block = max_threads_per_block
+        self.max_threads_dimx = max_threads_dimx
+        self.max_threads_dimy = max_threads_dimy
+        self.max_threads_dimz = max_threads_dimz
 
     @classmethod
     def _mro(cls):
@@ -744,6 +825,7 @@ SKX = IntelSkylake('skx')
 KLX = IntelSkylake('klx')
 CLX = IntelSkylake('clx')
 CLK = IntelSkylake('clk')
+SPR = IntelGoldenCove('spr')
 
 ARM = Arm('arm')
 GRAVITON = Arm('graviton')
@@ -759,6 +841,8 @@ NVIDIAX = NvidiaDevice('nvidiaX')
 AMDGPUX = AmdDevice('amdgpuX')
 INTELGPUX = IntelDevice('intelgpuX')
 
+PVC = IntelDevice('pvc', max_threads_per_block=4096)
+
 
 platform_registry = {
     'cpu64-dummy': CPU64_DUMMY,
@@ -771,6 +855,7 @@ platform_registry = {
     'klx': KLX,  # Kaby Lake
     'clx': CLX,  # Coffee Lake
     'clk': CLK,  # Cascade Lake
+    'spr': SPR,  # Sapphire Rapids
     'knl': KNL,
     'knl7210': KNL7210,
     'arm': ARM,  # Generic ARM CPU
@@ -781,7 +866,8 @@ platform_registry = {
     'power9': POWER9,
     'nvidiaX': NVIDIAX,  # Generic NVidia GPU
     'amdgpuX': AMDGPUX,   # Generic AMD GPU
-    'intelgpuX': INTELGPUX   # Generic Intel GPU
+    'intelgpuX': INTELGPUX,   # Generic Intel GPU
+    'pvc': PVC  # Intel Ponte Vecchio GPU
 }
 """
 Registry dict for deriving Platform classes according to the environment variable

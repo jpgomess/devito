@@ -10,7 +10,8 @@ from devito import (Constant, Dimension, Grid, Function, solve, TimeFunction, Eq
 from devito.ir import Expression, FindNodes
 from devito.symbolics import (retrieve_functions, retrieve_indexed, evalrel,  # noqa
                               CallFromPointer, Cast, DefFunction, FieldFromPointer,
-                              INT, FieldFromComposite, IntDiv, ccode, uxreplace)
+                              INT, FieldFromComposite, IntDiv, ccode, uxreplace,
+                              retrieve_derivatives)
 from devito.tools import as_tuple
 from devito.types import (Array, Bundle, FIndexed, LocalObject, Object,
                           Symbol as dSymbol)
@@ -129,6 +130,17 @@ def test_indexed():
 
     assert ub.free_symbols == {x, y}
     assert ub.indexed.free_symbols == {ub.indexed}
+
+
+def test_indexed_staggered():
+    grid = Grid(shape=(10, 10))
+    x, y = grid.dimensions
+    hx, hy = x.spacing, y.spacing
+
+    u = Function(name='u', grid=grid, staggered=(x, y))
+    u0 = u.subs({x: 1, y: 2})
+    assert u0.indices == (1 + hx / 2, 2 + hy / 2)
+    assert u0.indexify().indices == (1, 2)
 
 
 def test_bundle():
@@ -291,6 +303,18 @@ def test_cast():
     assert v != v1
 
 
+def test_findexed():
+    grid = Grid(shape=(3, 3, 3))
+    f = Function(name='f', grid=grid)
+
+    fi = FIndexed.from_indexed(f.indexify(), "foo", strides=(1, 2))
+    new_fi = fi.func(strides=(3, 4))
+
+    assert new_fi.name == fi.name == 'f'
+    assert new_fi.indices == fi.indices
+    assert new_fi.strides == (3, 4)
+
+
 def test_symbolic_printing():
     b = Symbol('b')
 
@@ -303,17 +327,11 @@ def test_symbolic_printing():
     lo = MyLocalObject(name='lo')
     assert str(lo + 2) == '2 + lo'
 
-
-def test_findexed():
-    grid = Grid(shape=(3, 3, 3))
-    f = Function(name='f', grid=grid)
-
+    grid = Grid((10,))
+    f = Function(name="f", grid=grid)
     fi = FIndexed.from_indexed(f.indexify(), "foo", strides=(1, 2))
-    new_fi = fi.func(strides=(3, 4))
-
-    assert new_fi.name == fi.name == 'f'
-    assert new_fi.indices == fi.indices
-    assert new_fi.strides == (3, 4)
+    df = DefFunction('aaa', arguments=[fi])
+    assert ccode(df) == 'aaa(foo(x))'
 
 
 def test_is_on_grid():
@@ -360,10 +378,10 @@ def test_solve_time():
     eq = m * u.dt2 + u.dx
     sol = solve(eq, u.forward)
     # Check u.dx is not evaluated. Need to simplify because the solution
-    # contains some Dummy in the Derivatibe subs that make equality break.
-    # TODO: replace by retreive_derivatives after Fabio's PR
-    assert sympy.simplify(u.dx - sol.args[2].args[0].args[1]) == 0
-    assert sympy.simplify(sol - (-dt**2*u.dx/m + 2.0*u - u.backward)) == 0
+    # contains some Dummy in the Derivative subs that make equality break.
+    assert len(retrieve_derivatives(sol)) == 1
+    assert sympy.simplify(u.dx - retrieve_derivatives(sol)[0]) == 0
+    assert sympy.simplify(sympy.expand(sol - (-dt**2*u.dx/m + 2.0*u - u.backward))) == 0
 
 
 @pytest.mark.parametrize('expr,subs,expected', [

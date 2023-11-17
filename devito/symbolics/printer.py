@@ -13,6 +13,7 @@ from sympy.printing.c import C99CodePrinter
 
 from devito.arch.compiler import AOMPCompiler
 from devito.symbolics.inspection import has_integer_args
+from devito.types.basic import AbstractFunction
 
 __all__ = ['ccode']
 
@@ -44,10 +45,12 @@ class CodePrinter(C99CodePrinter):
         return super().parenthesize(item, level, strict=strict)
 
     def _print_Function(self, expr):
-        # There exist no unknown Functions
-        if expr.func.__name__ not in self.known_functions:
-            self.known_functions[expr.func.__name__] = expr.func.__name__
-        return super()._print_Function(expr)
+        if isinstance(expr, AbstractFunction):
+            return str(expr)
+        else:
+            if expr.func.__name__ not in self.known_functions:
+                self.known_functions[expr.func.__name__] = expr.func.__name__
+            return super()._print_Function(expr)
 
     def _print_CondEq(self, expr):
         return "%s == %s" % (self._print(expr.lhs), self._print(expr.rhs))
@@ -101,6 +104,10 @@ class CodePrinter(C99CodePrinter):
         """Print a Mod as a C-like %-based operation."""
         args = ['(%s)' % self._print(a) for a in expr.args]
         return '%'.join(args)
+
+    def _print_Mul(self, expr):
+        term = super()._print_Mul(expr)
+        return term.replace("(-1)*", "-")
 
     def _print_Min(self, expr):
         if has_integer_args(*expr.args) and len(expr.args) == 2:
@@ -222,10 +229,13 @@ class CodePrinter(C99CodePrinter):
             func_name += 'f'
         return '%s(%s)' % (func_name, self._print(*expr.args))
 
+    def _print_DefFunction(self, expr):
+        arguments = [self._print(i) for i in expr.arguments]
+        return "%s(%s)" % (expr.name, ','.join(arguments))
+
     def _print_Fallback(self, expr):
         return expr.__str__()
 
-    _print_DefFunction = _print_Fallback
     _print_MacroArgument = _print_Fallback
     _print_IndexedBase = _print_Fallback
     _print_IndexSum = _print_Fallback
