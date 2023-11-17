@@ -2,23 +2,29 @@ import numpy as np
 import pytest
 from cached_property import cached_property
 
+from sympy import Mul  # noqa
+
 from conftest import (skipif, EVAL, _R, assert_structure, assert_blocking,  # noqa
                       get_params, get_arrays, check_array)
-from devito import (NODE, Eq, Inc, Constant, Function, TimeFunction, SparseTimeFunction,  # noqa
-                    Dimension, SubDimension, ConditionalDimension, DefaultDimension, Grid,
-                    Operator, norm, grad, div, dimensions, switchconfig, configuration,
-                    centered, first_derivative, solve, transpose, Abs, cos, sin, sqrt)
+from devito import (NODE, Eq, Inc, Constant, Function, TimeFunction,  # noqa
+                    SparseTimeFunction, Dimension, SubDimension,
+                    ConditionalDimension, DefaultDimension, Grid, Operator,
+                    norm, grad, div, dimensions, switchconfig, configuration,
+                    centered, first_derivative, solve, transpose, Abs, cos,
+                    sin, sqrt)
 from devito.exceptions import InvalidArgument, InvalidOperator
 from devito.finite_differences.differentiable import diffify
 from devito.ir import (Conditional, DummyEq, Expression, Iteration, FindNodes,
                        FindSymbols, ParallelIteration, retrieve_iteration_tree)
 from devito.passes.clusters.aliases import collect
+from devito.passes.clusters.factorization import collect_nested
 from devito.passes.clusters.cse import Temp, _cse
 from devito.passes.iet.parpragma import VExpanded
 from devito.symbolics import (INT, FLOAT, DefFunction, FieldFromPointer,  # noqa
-                              Keyword, SizeOf, estimate_cost, pow_to_mul, indexify)
+                              IndexedPointer, Keyword, SizeOf, estimate_cost,
+                              pow_to_mul, indexify)
 from devito.tools import as_tuple, generator
-from devito.types import Array, Scalar, Symbol
+from devito.types import Array, Scalar, Symbol, PrecomputedSparseTimeFunction
 
 from examples.seismic.acoustic import AcousticWaveSolver
 from examples.seismic import demo_model, AcquisitionGeometry
@@ -161,6 +167,9 @@ def test_cse(exprs, expected, min_cost):
     ('fa[x]**(-s)', 'fa[x]**(-s)'),
     ('-2/(s**2)', '-2/(s*s)'),
     ('-fa[x]', '-fa[x]'),
+    ('Mul(SizeOf("char"), '
+     '-IndexedPointer(FieldFromPointer("size", fa._C_symbol), x), evaluate=False)',
+     'sizeof(char)*(-fa_vec->size[x])'),
 ])
 def test_pow_to_mul(expr, expected):
     grid = Grid((4, 5))
@@ -171,6 +180,19 @@ def test_pow_to_mul(expr, expected):
     fb = Function(name='fb', grid=grid, dimensions=(x,), shape=(4,))  # noqa
 
     assert str(pow_to_mul(eval(expr))) == expected
+
+
+@pytest.mark.parametrize('expr,expected', [
+    ('s - SizeOf("int")*fa[x]', 's - fa[x]*sizeof(int)'),
+])
+def test_factorize(expr, expected):
+    grid = Grid((4, 5))
+    x, y = grid.dimensions
+
+    s = Scalar(name='s')  # noqa
+    fa = Function(name='fa', grid=grid, dimensions=(x,), shape=(4,))  # noqa
+
+    assert str(collect_nested(eval(expr))) == expected
 
 
 @pytest.mark.parametrize('expr,expected,estimate', [
@@ -418,6 +440,19 @@ class TestLifting(object):
                 for j in trees] == expected
         assert "".join(mapper.get(i.dim.name, i.dim.name) for i in iters) == visit
 
+    def test_implicit_only(self):
+        grid = Grid(shape=(5, 5))
+        time = grid.time_dim
+        u = TimeFunction(name="u", grid=grid, time_order=1)
+        idimeq = Eq(Symbol('s'), 1, implicit_dims=time)
+
+        op = Operator([Eq(u.forward, u + 1.), idimeq])
+        trees = retrieve_iteration_tree(op)
+
+        assert len(trees) == 2
+        assert_structure(op, ['t,x,y', 't'], 'txy')
+        assert trees[1].dimensions == [time]
+
 
 class TestAliases(object):
 
@@ -492,6 +527,7 @@ class TestAliases(object):
         ispace = exprs[0].ispace
 
         aliases = collect(extracted, ispace, False)
+        aliases.filter(lambda a: a.score > 0)
 
         assert len(aliases) == len(expected)
         assert all(i.pivot in expected for i in aliases)
@@ -1110,7 +1146,7 @@ class TestAliases(object):
         expr = 1./(5.*dt*sqrt(a)*b/hx + 2.*dt**2*b**2*a/hx**2 + 3.)
         eq = Eq(e.forward, 2.*expr*sqrt(a) + 3.*expr + e*sqrt(a)).subs({x: xright})
 
-        op = Operator(eq, openmp=False)
+        op = Operator(eq, opt=('advanced', {'openmp': False}))
 
         # Check generated code
         arrays = [i for i in FindSymbols().visit(op) if i.is_Array]
@@ -1538,14 +1574,14 @@ class TestAliases(object):
         """
         grid = Grid(shape=(10, 10))
 
-        u = TimeFunction(name="u", grid=grid, space_order=4, time_order=2)
+        u = TimeFunction(name="u", grid=grid, space_order=8, time_order=2)
 
         pde = u.dt2 - (u.dx.dx + u.dy.dy) + u.dx.dy
         eq = Eq(u.forward, solve(pde, u.forward))
 
         op = Operator(eq)
         assert len([i for i in FindSymbols().visit(op) if i.is_Array]) == 2
-        assert op._profiler._sections['section0'].sops == 39
+        assert op._profiler._sections['section0'].sops == 67
 
     def test_hoisting_iso_ot4_akin(self):
         """
@@ -1764,7 +1800,7 @@ class TestAliases(object):
 
         eqn = Eq(p0.forward, update_p)
 
-        op = Operator(eqn, subs=grid.spacing_map, openmp=True)
+        op = Operator(eqn, subs=grid.spacing_map, opt=('advanced', {'openmp': True}))
 
         # Check code generation
         bns, pbs = assert_blocking(op, {'x0_blk0'})
@@ -1810,7 +1846,7 @@ class TestAliases(object):
 
         eqn = Eq(p0.forward, update_p)
 
-        op = Operator(eqn, subs=grid.spacing_map, openmp=True)
+        op = Operator(eqn, subs=grid.spacing_map, opt=('advanced', {'openmp': True}))
 
         # Check code generation
         assert op._profiler._sections['section1'].sops == exp_ops
@@ -1854,7 +1890,7 @@ class TestAliases(object):
 
         eqn = Eq(p0.forward, update_p)
 
-        op = Operator(eqn, subs=grid.spacing_map, openmp=True)
+        op = Operator(eqn, subs=grid.spacing_map, opt=('advanced', {'openmp': True}))
 
         # Check code generation
         assert op._profiler._sections['section1'].sops == exp_ops
@@ -1921,7 +1957,7 @@ class TestAliases(object):
         eqns = [Eq(p0.forward, update_p),
                 Eq(m0.forward, update_m)]
 
-        op = Operator(eqns, subs=grid.spacing_map, openmp=True)
+        op = Operator(eqns, subs=grid.spacing_map, opt=('advanced', {'openmp': True}))
 
         # Check code generation
         assert op._profiler._sections['section1'].sops == exp_ops
@@ -2027,8 +2063,11 @@ class TestAliases(object):
 
         eqn = Eq(p.backward, H0)
 
-        op0 = Operator(eqn, subs=grid.spacing_map, opt=('noop', {'openmp': True}))
-        op1 = Operator(eqn, subs=grid.spacing_map, opt=('advanced', {'openmp': True}))
+        op0 = Operator(eqn, subs=grid.spacing_map,
+                       opt=('noop', {'openmp': True}))
+        op1 = Operator(eqn, subs=grid.spacing_map,
+                       opt=('advanced', {'openmp': True,
+                                         'cire-schedule': 0}))
 
         # Check code generation
         bns, pbs = assert_blocking(op1, {'x0_blk0'})
@@ -2119,9 +2158,9 @@ class TestAliases(object):
         ('v.dx.dx + p.dx.dx',
          (2, 2, (0, 2)), (61, 61, 25)),
         ('(v.dx + v.dy).dx - (v.dx + v.dy).dy + 2*f.dx.dx + f*f.dy.dy + f.dx.dx(x0=1)',
-         (3, 3, (0, 3)), (218, 202, 74)),
+         (3, 3, (0, 3)), (218, 202, 75)),
         ('(g*(1 + f)*v.dx).dx + (2*g*f*v.dx).dx',
-         (1, 2, (0, 1)), (52, 70, 20)),
+         (1, 1, (0, 1)), (52, 70, 20)),
         ('g*(f.dx.dx + g.dx.dx)',
          (1, 2, (0, 1)), (47, 62, 17)),
     ])
@@ -2198,7 +2237,8 @@ class TestAliases(object):
 
         eqn = Eq(v.forward, f*(1. + v).dx + 2.*f*((1. + v).dx + f))
 
-        op = Operator(eqn, opt=('advanced', {'cire-mingain': 0}))
+        op = Operator(eqn, opt=('advanced', {'cire-mingain': 0,
+                                             'cire-schedule': 0}))
 
         # Check code generation
         assert len([i for i in FindSymbols().visit(op) if i.is_Array]) == 1
@@ -2604,6 +2644,50 @@ class TestAliases(object):
         assert len([i for i in FindSymbols().visit(op) if i.is_Array]) == 1
         assert op._profiler._sections['section0'].sops == 16
 
+    def test_issue_2163(self):
+        grid = Grid((3, 3))
+        z = grid.dimensions[-1]
+        mapper = {z: INT(abs(z-1))}
+
+        u = TimeFunction(name="u", grid=grid)
+        op = Operator(Eq(u.forward, u.dy.dy.subs(mapper),
+                         subdomain=grid.interior))
+        assert_structure(op, ['t,i0x,i0y'], 'ti0xi0y')
+
+    def test_dtype_aliases(self):
+        a = np.arange(64).reshape((8, 8))
+        grid = Grid(shape=a.shape, extent=(7, 7))
+
+        so = 2
+        f = Function(name='f', grid=grid, space_order=so, dtype=np.int32)
+        f.data[:] = a
+
+        fo = Function(name='fo', grid=grid, space_order=so, dtype=np.int32)
+        op = Operator(Eq(fo, f.dx))
+        op.apply()
+
+        assert FindNodes(Expression).visit(op)[0].dtype == np.float32
+        assert np.all(fo.data[:-1, :-1] == 8)
+
+    def test_sparse_const(self):
+        grid = Grid((11, 11, 11))
+
+        u = TimeFunction(name="u", grid=grid)
+        src = PrecomputedSparseTimeFunction(name="src", grid=grid, npoint=1, nt=11,
+                                            r=2, interpolation_coeffs=np.ones((1, 3, 2)),
+                                            gridpoints=[[5, 5, 5]])
+        u.data.fill(1.)
+
+        op = Operator(src.interpolate(u))
+
+        cond = FindNodes(Conditional).visit(op)
+        assert len(cond) == 1
+        assert len(cond[0].args['then_body'][0].exprs) == 1
+        assert all(e.is_scalar for e in cond[0].args['then_body'][0].exprs)
+
+        op()
+        assert np.all(src.data == 8)
+
 
 class TestIsoAcoustic(object):
 
@@ -2647,10 +2731,12 @@ class TestIsoAcoustic(object):
         bns, _ = assert_blocking(op1, {'x0_blk0'})  # due to loop blocking
 
         assert summary0[('section0', None)].ops == 50
-        assert summary0[('section1', None)].ops == 148
+        assert summary0[('section1', None)].ops == 44
         assert np.isclose(summary0[('section0', None)].oi, 2.851, atol=0.001)
 
         assert summary1[('section0', None)].ops == 31
+        assert summary1[('section1', None)].ops == 88
+        assert summary1[('section2', None)].ops == 25
         assert np.isclose(summary1[('section0', None)].oi, 1.767, atol=0.001)
 
         assert np.allclose(u0.data, u1.data, atol=10e-5)
@@ -2723,10 +2809,12 @@ class TestTTI(object):
         assert y.parent is y0_blk0
         assert not x._defines & y._defines
 
-        # Also, in this operator, we expect seven temporary Arrays:
-        # * all of the seven Arrays are allocated on the heap
-        # * with OpenMP, five Arrays are defined globally, and two additional
-        #   Arrays are defined locally
+        # Also, in this operator, we expect six temporary Arrays:
+        # * all of the six Arrays are allocated on the heap
+        # * with OpenMP:
+        #   four Arrays are defined globally for the cos/sin temporaries
+        #   3 Arrays are defined globally for the sparse positions temporaries
+        # and two additional bock-sized Arrays are defined locally
         arrays = [i for i in FindSymbols().visit(op) if i.is_Array]
         extra_arrays = 2
         assert len(arrays) == 4 + extra_arrays
@@ -2767,15 +2855,16 @@ class TestTTI(object):
         assert sections[1].sops == expected
 
     @switchconfig(profiling='advanced')
-    @pytest.mark.parametrize('space_order,expected', [
-        (4, 121),
+    @pytest.mark.parametrize('space_order,exp_ops,exp_arrays', [
+        (4, 122, 6), (8, 221, 7)
     ])
-    def test_opcounts_adjoint(self, space_order, expected):
-        wavesolver = self.tti_operator(opt=('advanced', {'openmp': False}))
+    def test_opcounts_adjoint(self, space_order, exp_ops, exp_arrays):
+        wavesolver = self.tti_operator(space_order=space_order,
+                                       opt=('advanced', {'openmp': False}))
         op = wavesolver.op_adj()
 
-        assert op._profiler._sections['section1'].sops == expected
-        assert len([i for i in FindSymbols().visit(op) if i.is_Array]) == 7
+        assert op._profiler._sections['section1'].sops == exp_ops
+        assert len([i for i in FindSymbols().visit(op) if i.is_Array]) == exp_arrays
 
 
 class TestTTIv2(object):
@@ -2819,7 +2908,7 @@ class TestTTIv2(object):
 
         eqns = [Eq(u.forward, (2*u - u.backward) + s**2/m * (e * H2u + H1v)),
                 Eq(v.forward, (2*v - v.backward) + s**2/m * (d * H2v + H1v))]
-        op = Operator(eqns, openmp=True)
+        op = Operator(eqns, opt=('advanced', {'openmp': True}))
 
         # Check code generation
         _, pbs = assert_blocking(op, {'x0_blk0'})

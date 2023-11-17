@@ -24,7 +24,7 @@ from devito.passes import (Graph, lower_index_derivatives, generate_implicit,
 from devito.symbolics import estimate_cost
 from devito.tools import (DAG, OrderedSet, Signer, ReducerMap, as_tuple, flatten,
                           filter_sorted, frozendict, is_integer, split, timed_pass,
-                          timed_region)
+                          timed_region, contains_val)
 from devito.types import Grid, Evaluable
 
 __all__ = ['Operator']
@@ -311,8 +311,15 @@ class Operator(Callable):
         # Specialization is performed on unevaluated expressions
         expressions = cls._specialize_dsl(expressions, **kwargs)
 
-        # Lower functional DSL
+        # Lower FD derivatives
+        # NOTE: we force expansion of derivatives along SteppingDimensions
+        # because it drastically simplifies the subsequent lowering into
+        # ModuloDimensions
+        if not expand:
+            expand = lambda d: d.is_Stepping
         expressions = flatten([i._evaluate(expand=expand) for i in expressions])
+
+        # Scalarize the tensor equations, if any
         expressions = [j for i in expressions for j in i._flatten]
 
         # A second round of specialization is performed on evaluated expressions
@@ -526,6 +533,7 @@ class Operator(Callable):
         edges = [(i, i.parent) for i in self.dimensions
                  if i.is_Derived and i.parent in set(nodes)]
         toposort = DAG(nodes, edges).topological_sort()
+
         futures = {}
         for d in reversed(toposort):
             if set(d._arg_names).intersection(kwargs):
@@ -542,6 +550,7 @@ class Operator(Callable):
             except ValueError:
                 raise ValueError("Override `%s` is incompatible with overrides `%s`" %
                                  (p, [i for i in overrides if i.name in args]))
+
         # Process data-carrier defaults
         for p in defaults:
             if p.name in args:
@@ -553,11 +562,18 @@ class Operator(Callable):
                 elif k in futures:
                     # An explicit override is later going to set `args[k]`
                     pass
-                elif is_integer(args[k]) and args[k] not in as_tuple(v):
+                elif k in kwargs:
+                    # User is in control
+                    # E.g., given a ConditionalDimension `t_sub` with factor `fact` and
+                    # a TimeFunction `usave(t_sub, x, y)`, an override for `fact` is
+                    # supplied w/o overriding `usave`; that's legal
+                    pass
+                elif is_integer(args[k]) and not contains_val(args[k], v):
                     raise ValueError("Default `%s` is incompatible with other args as "
                                      "`%s=%s`, while `%s=%s` is expected. Perhaps you "
                                      "forgot to override `%s`?" %
                                      (p, k, v, k, args[k], p))
+
         args = kwargs['args'] = args.reduce_all()
 
         # DiscreteFunctions may be created from CartesianDiscretizations, which in
@@ -565,6 +581,11 @@ class Operator(Callable):
         discretizations = {getattr(kwargs[p.name], 'grid', None) for p in overrides}
         discretizations.update({getattr(p, 'grid', None) for p in defaults})
         discretizations.discard(None)
+        # Remove subgrids if multiple grids
+        if len(discretizations) > 1:
+            discretizations = {g for g in discretizations
+                               if not any(d.is_Derived for d in g.dimensions)}
+
         for i in discretizations:
             args.update(i._arg_values(**kwargs))
 
@@ -625,9 +646,10 @@ class Operator(Callable):
         """Process runtime arguments upon returning from ``.apply()``."""
         for p in self.parameters:
             try:
-                p._arg_apply(args[p.name], args[p.coordinates.name], kwargs.get(p.name))
+                subfuncs = (args[getattr(p, s).name] for s in p._sub_functions)
+                p._arg_apply(args[p.name], *subfuncs, alias=kwargs.get(p.name))
             except AttributeError:
-                p._arg_apply(args[p.name], kwargs.get(p.name))
+                p._arg_apply(args[p.name], alias=kwargs.get(p.name))
 
     @cached_property
     def _known_arguments(self):
@@ -915,15 +937,22 @@ class Operator(Callable):
 
         # Emit local, i.e. "per-rank" performance. Without MPI, this is the only
         # thing that will be emitted
-        for k, v in summary.items():
-            rank = "[rank%d]" % k.rank if k.rank is not None else ""
+        def lower_perfentry(v):
             if v.gflopss:
                 oi = "OI=%.2f" % fround(v.oi)
                 gflopss = "%.2f GFlops/s" % fround(v.gflopss)
                 gpointss = "%.2f GPts/s" % fround(v.gpointss)
-                metrics = "[%s]" % ", ".join([oi, gflopss, gpointss])
+                return "[%s]" % ", ".join([oi, gflopss, gpointss])
+            elif v.gpointss:
+                gpointss = "%.2f GPts/s" % fround(v.gpointss)
+                return "[%s]" % gpointss
             else:
-                metrics = ""
+                return ""
+
+        for k, v in summary.items():
+            rank = "[rank%d]" % k.rank if k.rank is not None else ""
+
+            metrics = lower_perfentry(v)
 
             itershapes = [",".join(str(i) for i in its) for its in v.itershapes]
             if len(itershapes) > 1:
@@ -935,9 +964,12 @@ class Operator(Callable):
             name = "%s%s<%s>" % (k.name, rank, itershapes)
 
             perf("%s* %s ran in %.2f s %s" % (indent, name, fround(v.time), metrics))
-            for n, time in summary.subsections.get(k.name, {}).items():
-                perf("%s+ %s ran in %.2f s [%.2f%%]" %
-                     (indent*2, n, time, fround(time/v.time*100)))
+            for n, v1 in summary.subsections.get(k.name, {}).items():
+                metrics = lower_perfentry(v1)
+
+                perf("%s+ %s ran in %.2f s [%.2f%%] %s" %
+                     (indent*2, n, fround(v1.time), fround(v1.time/v.time*100),
+                      metrics))
 
         # Emit performance mode and arguments
         perf_args = {}
@@ -1054,6 +1086,16 @@ class ArgumentsMap(dict):
         """The MPI communicator the arguments are collective over."""
         return self.grid.comm if self.grid is not None else MPI.COMM_NULL
 
+    @property
+    def opkwargs(self):
+        temp_registry = {v: k for k, v in platform_registry.items()}
+        platform = temp_registry[self.platform]
+
+        temp_registry = {v: k for k, v in compiler_registry.items()}
+        compiler = temp_registry[self.compiler.__class__]
+
+        return {'platform': platform, 'compiler': compiler, 'language': self.language}
+
 
 def parse_kwargs(**kwargs):
     """
@@ -1169,7 +1211,9 @@ def parse_kwargs(**kwargs):
 
     # `allocator`
     kwargs['allocator'] = default_allocator(
-        '%s.%s' % (kwargs['compiler'].__class__.__name__, kwargs['language'])
+        '%s.%s.%s' % (kwargs['compiler'].name,
+                      kwargs['language'],
+                      kwargs['platform'])
     )
 
     return kwargs

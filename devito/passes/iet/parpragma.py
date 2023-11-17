@@ -1,3 +1,5 @@
+from itertools import takewhile
+
 import numpy as np
 import cgen as c
 from cached_property import cached_property
@@ -44,8 +46,21 @@ class PragmaSimdTransformer(PragmaTransformer):
     def simd_reg_size(self):
         return self.platform.simd_reg_size
 
-    @iet_pass
-    def make_simd(self, iet):
+    def _make_simd_pragma(self, iet):
+        indexeds = FindSymbols('indexeds').visit(iet)
+        aligned = {i.name for i in indexeds if i.function.is_DiscreteFunction}
+        if aligned:
+            simd = self.lang['simd-for-aligned']
+            simd = as_tuple(simd(','.join(sorted(aligned)), self.simd_reg_size))
+        else:
+            simd = as_tuple(self.lang['simd-for'])
+
+        return simd
+
+    def _make_simd(self, iet):
+        """
+        Carry out the bulk of `make_simd`.
+        """
         mapper = {}
         for tree in retrieve_iteration_tree(iet):
             candidates = [i for i in tree if i.is_ParallelRelaxed]
@@ -100,13 +115,7 @@ class PragmaSimdTransformer(PragmaTransformer):
                     continue
 
             # Add SIMD pragma
-            indexeds = FindSymbols('indexeds').visit(candidate)
-            aligned = {i.name for i in indexeds if i.function.is_DiscreteFunction}
-            if aligned:
-                simd = self.lang['simd-for-aligned']
-                simd = as_tuple(simd(','.join(sorted(aligned)), self.simd_reg_size))
-            else:
-                simd = as_tuple(self.lang['simd-for'])
+            simd = self._make_simd_pragma(candidate)
             pragmas = candidate.pragmas + simd
 
             # Add VECTORIZED property
@@ -118,6 +127,10 @@ class PragmaSimdTransformer(PragmaTransformer):
 
         return iet, {}
 
+    @iet_pass
+    def make_simd(self, iet):
+        return self._make_simd(iet)
+
 
 class PragmaIteration(ParallelIteration):
 
@@ -125,7 +138,9 @@ class PragmaIteration(ParallelIteration):
                  nthreads=None, ncollapsed=None, reduction=None, tile=None,
                  gpu_fit=None, **kwargs):
 
-        construct = self._make_construct(parallel=parallel)
+        construct = self._make_construct(
+            parallel=parallel, ncollapsed=ncollapsed, tile=tile
+        )
         clauses = self._make_clauses(
             ncollapsed=ncollapsed, chunk_size=chunk_size, nthreads=nthreads,
             reduction=reduction, schedule=schedule, tile=tile, gpu_fit=gpu_fit,
@@ -253,6 +268,46 @@ class PragmaShmTransformer(PragmaSimdTransformer):
     def threadid(self):
         return self.sregistry.threadid
 
+    def _score_candidate(self, n0, root, collapsable=()):
+        """
+        The score of a collapsable nest depends on the number of fully-parallel
+        Iterations and their position in the nest (the outer, the better).
+        """
+        nest = [root] + list(collapsable)
+        n = len(nest)
+
+        # Number of fully-parallel collapsable Iterations
+        key = lambda i: i.is_ParallelNoAtomic
+        fp_iters = list(takewhile(key, nest))
+        n_fp_iters = len(fp_iters)
+
+        # Number of parallel-if-atomic collapsable Iterations
+        key = lambda i: i.is_ParallelAtomic
+        pia_iters = list(takewhile(key, nest))
+        n_pia_iters = len(pia_iters)
+
+        # Prioritize the Dimensions that are more likely to define larger
+        # iteration spaces
+        key = lambda d: (not d.is_Derived or
+                         (d.is_Custom and not is_integer(d.symbolic_size)) or
+                         (d.is_Block and d._depth == 1))
+
+        fpdims = [i.dim for i in fp_iters]
+        n_fp_iters_large = len([d for d in fpdims if key(d)])
+
+        piadims = [i.dim for i in pia_iters]
+        n_pia_iters_large = len([d for d in piadims if key(d)])
+
+        return (
+            int(n_fp_iters == n),  # Fully-parallel nest
+            n_fp_iters_large,
+            n_fp_iters,
+            n_pia_iters_large,
+            n_pia_iters,
+            -(n0 + 1),  # The outer, the better
+            n,
+        )
+
     def _select_candidates(self, candidates):
         assert candidates
 
@@ -262,15 +317,18 @@ class PragmaShmTransformer(PragmaSimdTransformer):
         mapper = {}
         for n0, root in enumerate(candidates):
 
+            # Score `root` in isolation
+            mapper[(root, ())] = self._score_candidate(n0, root)
+
             collapsable = []
             for n, i in enumerate(candidates[n0+1:], n0+1):
                 # The Iteration nest [root, ..., i] must be perfect
                 if not IsPerfectIteration(depth=i).visit(root):
                     break
 
-                # Loops are collapsable only if none of the iteration variables appear
-                # in initializer expressions. For example, the following two loops
-                # cannot be collapsed
+                # Loops are collapsable only if none of the iteration variables
+                # appear in initializer expressions. For example, the following
+                # two loops cannot be collapsed
                 #
                 # for (i = ... )
                 #   for (j = i ...)
@@ -280,7 +338,7 @@ class PragmaShmTransformer(PragmaSimdTransformer):
                 if any(j.dim in i.symbolic_min.free_symbols for j in candidates[n0:n]):
                     break
 
-                # Also, we do not want to collapse SIMD-vectorized Iterations
+                # Can't collapse SIMD-vectorized Iterations
                 if i.is_Vectorized:
                     break
 
@@ -296,16 +354,9 @@ class PragmaShmTransformer(PragmaSimdTransformer):
 
                 collapsable.append(i)
 
-            # Give a score to this candidate, based on the number of fully-parallel
-            # Iterations and their position (i.e. outermost to innermost) in the nest
-            score = (
-                int(root.is_ParallelNoAtomic),
-                int(len([i for i in collapsable if i.is_ParallelNoAtomic]) >= 1),
-                int(len([i for i in collapsable if i.is_ParallelRelaxed]) >= 1),
-                -(n0 + 1)  # The outermost, the better
-            )
-
-            mapper[(root, tuple(collapsable))] = score
+                # Score `root + collapsable`
+                v = tuple(collapsable)
+                mapper[(root, v)] = self._score_candidate(n0, root, v)
 
         # Retrieve the candidates with highest score
         root, collapsable = max(mapper, key=mapper.get)
@@ -347,7 +398,7 @@ class PragmaShmTransformer(PragmaSimdTransformer):
         partree = Transformer(mapper).visit(partree)
         return partree
 
-    def _make_partree(self, candidates, nthreads=None, index=None):
+    def _make_partree(self, candidates, nthreads=None):
         assert candidates
 
         # Get the collapsable Iterations
@@ -373,9 +424,14 @@ class PragmaShmTransformer(PragmaSimdTransformer):
                                           ncollapsed=ncollapsed, nthreads=nthreads,
                                           **root.args)
             prefix = []
+        elif nthreads is not None:
+            body = self.HostIteration(schedule='static',
+                                      parallel=nthreads is not self.nthreads_nested,
+                                      ncollapsed=ncollapsed, nthreads=nthreads,
+                                      **root.args)
+            prefix = []
         else:
             # pragma ... for ... schedule(..., expr)
-            assert nthreads is None
             nthreads = self.nthreads_nonaffine
             chunk_size = Symbol(name='chunk_size')
             body = self.HostIteration(ncollapsed=ncollapsed, chunk_size=chunk_size,
@@ -465,7 +521,7 @@ class PragmaShmTransformer(PragmaSimdTransformer):
     def _make_parallel(self, iet):
         mapper = {}
         parrays = {}
-        for i, tree in enumerate(retrieve_iteration_tree(iet, mode='superset')):
+        for tree in retrieve_iteration_tree(iet, mode='superset'):
             # Get the parallelizable Iterations in `tree`
             candidates = filter_iterations(tree, key=self.key)
             if not candidates:
@@ -477,7 +533,7 @@ class PragmaShmTransformer(PragmaSimdTransformer):
                 continue
 
             # Outer parallelism
-            root, partree = self._make_partree(candidates, index=i)
+            root, partree = self._make_partree(candidates)
             if partree is None or root in mapper:
                 continue
 
@@ -566,8 +622,16 @@ class PragmaDeviceAwareTransformer(DeviceAwareMixin, PragmaShmTransformer):
         super().__init__(sregistry, options, platform, compiler)
 
         self.gpu_fit = options['gpu-fit']
-        self.par_tile = options['par-tile']
+        # Need to reset the tile in case was already used and iter over by blocking
+        self.par_tile = options['par-tile'].reset()
         self.par_disabled = options['par-disabled']
+
+    def _score_candidate(self, n0, root, collapsable=()):
+        # `ndptrs`, the number of device pointers, part of the score too to
+        # ensure the outermost loop is offloaded
+        ndptrs = len(self._device_pointers(root))
+
+        return (ndptrs,) + super()._score_candidate(n0, root, collapsable)
 
     def _make_threaded_prodders(self, partree):
         if isinstance(partree.root, self.DeviceIteration):
@@ -594,7 +658,8 @@ class PragmaDeviceAwareTransformer(DeviceAwareMixin, PragmaShmTransformer):
 
         if self._is_offloadable(root):
             body = self.DeviceIteration(gpu_fit=self.gpu_fit,
-                                        ncollapsed=len(collapsable) + 1,
+                                        ncollapsed=len(collapsable)+1,
+                                        tile=self.par_tile.nextitem(),
                                         **root.args)
             partree = ParallelTree([], body, nthreads=nthreads)
 

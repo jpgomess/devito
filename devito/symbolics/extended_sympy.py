@@ -4,7 +4,7 @@ Extended SymPy hierarchy.
 
 import numpy as np
 import sympy
-from sympy import Expr, Integer, Function, Number, Tuple, sympify
+from sympy import Expr, Function, Number, Tuple, sympify
 from sympy.core.decorators import call_highest_priority
 
 from devito.tools import (Pickable, as_tuple, is_integer, float2, float3, float4,  # noqa
@@ -86,7 +86,8 @@ class IntDiv(sympy.Expr):
             # Perhaps it's a symbolic RHS -- but we wanna be sure it's of type int
             if not hasattr(rhs, 'dtype'):
                 raise ValueError("Symbolic RHS `%s` lacks dtype" % rhs)
-            if not issubclass(rhs.dtype, np.integer):
+            if not issubclass(rhs.dtype, np.integer) or \
+                    not (rhs.is_Constant and issubclass(rhs.dtype, np.integer)):
                 raise ValueError("Symbolic RHS `%s` must be of type `int`, found "
                                  "`%s` instead" % (rhs, rhs.dtype))
         rhs = sympify(rhs)
@@ -278,14 +279,10 @@ class ListInitializer(sympy.Expr, Pickable):
     def __new__(cls, params):
         args = []
         for p in as_tuple(params):
-            if isinstance(p, str):
-                args.append(Symbol(p))
-            elif is_integer(p):
-                args.append(Integer(p))
-            elif not isinstance(p, Expr):
-                raise ValueError("`params` must be an iterable of Expr or str")
-            else:
-                args.append(p)
+            try:
+                args.append(sympify(p))
+            except sympy.SympifyError:
+                raise ValueError("Illegal param `%s`" % p)
         obj = sympy.Expr.__new__(cls, *args)
         obj.params = tuple(args)
         return obj

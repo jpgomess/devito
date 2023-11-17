@@ -197,7 +197,7 @@ class TestFD(object):
 
         s_expr = u.diff(dim).as_finite_difference(indices).evalf(_PRECISION)
         assert(simplify(expr - s_expr) == 0)  # Symbolic equality
-        assert type(expr) == EvalDerivative
+        assert type(expr) is EvalDerivative
         expr1 = s_expr.func(*expr.args)
         assert(expr1 == s_expr)  # Exact equality
 
@@ -217,7 +217,7 @@ class TestFD(object):
         indices = [(dim + i * dim.spacing) for i in range(-width, width + 1)]
         s_expr = u.diff(dim, dim).as_finite_difference(indices).evalf(_PRECISION)
         assert(simplify(expr - s_expr) == 0)  # Symbolic equality
-        assert type(expr) == EvalDerivative
+        assert type(expr) is EvalDerivative
         expr1 = s_expr.func(*expr.args)
         assert(expr1 == s_expr)  # Exact equality
 
@@ -457,6 +457,31 @@ class TestFD(object):
         for fd in g._fd:
             assert getattr(g, fd)
 
+        for d in grid.dimensions:
+            assert 'd%s' % d.name in f._fd
+            assert 'd%s' % d.name in g._fd
+            for o in range(2, min(7, so+1)):
+                assert 'd%s%s' % (d.name, o) in f._fd
+                assert 'd%s%s' % (d.name, o) in g._fd
+
+    def test_shortcuts_mixed(self):
+        grid = Grid(shape=(10,))
+        f = Function(name='f', grid=grid, space_order=2)
+        g = Function(name='g', grid=grid, space_order=4)
+        assert 'dx4' not in (f*g)._fd
+        assert 'dx4' not in (f+g)._fd
+        assert 'dx4' not in (g*f.dx)._fd
+
+    def test_transpose_simple(self):
+        grid = Grid(shape=(4, 4))
+
+        f = TimeFunction(name='f', grid=grid, space_order=4)
+
+        assert str(f.dx.T.evaluate) == ("-0.0833333333*f(t, x - 2*h_x, y)/h_x "
+                                        "+ 0.666666667*f(t, x - h_x, y)/h_x "
+                                        "- 0.666666667*f(t, x + h_x, y)/h_x "
+                                        "+ 0.0833333333*f(t, x + 2*h_x, y)/h_x")
+
     @pytest.mark.parametrize('so', [2, 4, 8, 12])
     @pytest.mark.parametrize('ndim', [1, 2])
     @pytest.mark.parametrize('derivative, adjoint_name', [
@@ -498,31 +523,38 @@ class TestFD(object):
     def test_shifted_div(self, shift, ndim):
         grid = Grid(tuple([11]*ndim))
         f = Function(name="f", grid=grid, space_order=4)
-        df = div(f, shift=shift).evaluate
-        ref = 0
-        for i, d in enumerate(grid.dimensions):
-            x0 = (None if shift is None else d + shift[i] * d.spacing if
-                  type(shift) is tuple else d + shift * d.spacing)
-            ref += getattr(f, 'd%s' % d.name)(x0=x0)
-        assert df == ref.evaluate
+        for order in [None, 2]:
+            df = div(f, shift=shift, order=order).evaluate
+            ref = 0
+            for i, d in enumerate(grid.dimensions):
+                x0 = (None if shift is None else d + shift[i] * d.spacing if
+                      type(shift) is tuple else d + shift * d.spacing)
+                ref += getattr(f, 'd%s' % d.name)(x0=x0, fd_order=order)
+            assert df == ref.evaluate
 
     @pytest.mark.parametrize('shift, ndim', [(None, 2), (.5, 2), (.5, 3),
                                              ((.5, .5, .5), 3)])
     def test_shifted_grad(self, shift, ndim):
         grid = Grid(tuple([11]*ndim))
         f = Function(name="f", grid=grid, space_order=4)
-        g = grad(f, shift=shift).evaluate
-        for i, (d, gi) in enumerate(zip(grid.dimensions, g)):
-            x0 = (None if shift is None else d + shift[i] * d.spacing if
-                  type(shift) is tuple else d + shift * d.spacing)
-            assert gi == getattr(f, 'd%s' % d.name)(x0=x0).evaluate
+        for order in [None, 2]:
+            g = grad(f, shift=shift, order=order).evaluate
+            for i, (d, gi) in enumerate(zip(grid.dimensions, g)):
+                x0 = (None if shift is None else d + shift[i] * d.spacing if
+                      type(shift) is tuple else d + shift * d.spacing)
+                gk = getattr(f, 'd%s' % d.name)(x0=x0, fd_order=order).evaluate
+                assert gi == gk
 
     def test_substitution(self):
         grid = Grid((11, 11))
         f = Function(name="f", grid=grid, space_order=4)
         expr = f.dx + f + 1
+
         assert simplify(expr.subs(f.dx, 1) - (f + 2)) == 0
-        assert simplify(expr.subs(f, -1) - f.dx) == 0
+        # f.dx.subs(f, -1) = 0 and f.subs(f, -1) = -1 so
+        # expr.subs(f, -1) = 0
+        assert simplify(expr.subs(f, -1)) == 0
+        # f.dx -> 1, f -> -1
         assert simplify(expr.subs({f.dx: 1, f: -1}) - 1) == 0
 
         expr2 = expr.subs({'x0': 2})
@@ -534,6 +566,13 @@ class TestFD(object):
         # x0 and f.dx
         expr3 = expr.subs({f.dx: f.dx2, 'x0': 2})
         assert simplify(expr3 - (f.dx2(x0=2) + f + 1)) == 0
+
+        # Test substitution with reconstructed objects
+        x, y = grid.dimensions
+        f1 = f.func(x + 1, y)
+        f2 = f.func(x + 1, y)
+        assert f1 is not f2
+        assert f1.subs(f2, -1) == -1
 
 
 class TestTwoStageEvaluation(object):
@@ -731,6 +770,41 @@ class TestTwoStageEvaluation(object):
 
         term1 = f.dxdy._evaluate(expand=False)
         assert len(term1.find(IndexDerivative)) == 2
+
+    def test_transpose(self):
+        grid = Grid(shape=(4, 4))
+        x, _ = grid.dimensions
+        h_x = x.spacing
+
+        f = TimeFunction(name='f', grid=grid, space_order=4)
+
+        term = f.dx.T._evaluate(expand=False)
+        assert isinstance(term, IndexDerivative)
+
+        i0, = term.dimensions
+        assert term.base == f.subs(x, x + i0*h_x)
+
+    def test_tensor_algebra(self):
+        grid = Grid(shape=(4, 4))
+
+        f = Function(name='f', grid=grid, space_order=4)
+
+        v = grad(f)._evaluate(expand=False)
+
+        assert all(isinstance(i, IndexDerivative) for i in v)
+        assert all(zip([Add(*i.args) for i in grad(f).evaluate], v.evaluate))
+
+    def test_laplacian_opt(self):
+        grid = Grid(shape=(4, 4))
+        f = Function(name='f', grid=grid, space_order=4)
+
+        assert f.laplacian() == f.laplace
+        df = f.laplacian(order=2, shift=.5)
+        for (v, d) in zip(df.args, grid.dimensions):
+            assert v.dims[0] == d
+            assert v.fd_order == 2
+            assert v.deriv_order == 2
+            assert d in v.x0
 
 
 def bypass_uneval(expr):
