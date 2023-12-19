@@ -23,7 +23,7 @@ def src_rec(v, tau, model, geometry, forward=True):
     name = "rec_tau" if forward else "rec"
     rec = Receiver(name="%s" % name, grid=model.grid, time_range=geometry.time_axis,
                    npoint=geometry.nrec)
-
+    tau = vec(tau)
     if forward:
 
         # The source injection term
