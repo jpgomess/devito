@@ -1,11 +1,10 @@
 import numpy as np
 import pytest
-from cached_property import cached_property
 
 from conftest import skipif, _R, assert_blocking, assert_structure
 from devito import (Grid, Constant, Function, TimeFunction, SparseFunction,
                     SparseTimeFunction, Dimension, ConditionalDimension, SubDimension,
-                    SubDomain, Eq, Ne, Inc, NODE, Operator, norm, inner, configuration,
+                    SubDomain, Eq, Ne, Inc, NODE, Operator, norm, configuration,
                     switchconfig, generic_derivative)
 from devito.data import LEFT, RIGHT
 from devito.ir.iet import (Call, Conditional, Iteration, FindNodes, FindSymbols,
