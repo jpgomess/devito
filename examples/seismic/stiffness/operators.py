@@ -23,7 +23,7 @@ def src_rec(v, tau, model, geometry, forward=True):
     name = "rec_tau" if forward else "rec"
     rec = Receiver(name="%s" % name, grid=model.grid, time_range=geometry.time_axis,
                    npoint=geometry.nrec)
-
+    tau = vec(tau)
     if forward:
 
         # The source injection term
@@ -300,7 +300,7 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
         rec_term_sigz = rec_p.inject(field=sig[1].backward, expr=s*rec_p/rho)
         rec_expr += rec_term_sigx + rec_term_sigz
         if model.grid.dim == 3:
-            rec_expr += rec_p.inject(field=sig[2].backward, expr=rec_p/rho) 
+            rec_expr += rec_p.inject(field=sig[2].backward, expr=rec_p/rho)
 
     # Substitute spacing terms to reduce flops
     return Operator(eqn + rec_expr + gradient_update, subs=model.spacing_map,
