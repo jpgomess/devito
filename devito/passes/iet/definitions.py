@@ -355,7 +355,9 @@ class DataManager(object):
         includes = set()
         if isinstance(iet, EntryFunction) and globs:
             for i in sorted(globs, key=lambda f: f.name):
-                includes.add(self._alloc_array_on_global_mem(iet, i, storage))
+                v = self._alloc_array_on_global_mem(iet, i, storage)
+                if v:
+                    includes.add(v)
 
         iet, efuncs = self._inject_definitions(iet, storage)
 
@@ -582,7 +584,7 @@ class DeviceAwareDataManager(DataManager):
         self.place_transfers(graph, mapper=mapper)
         self.place_definitions(graph, globs=set())
         self.place_devptr(graph)
-        self.place_bundling(graph)
+        self.place_bundling(graph, writes_input=graph.writes_input)
         self.place_casts(graph)
 
 

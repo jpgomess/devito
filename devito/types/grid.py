@@ -13,6 +13,7 @@ from devito.tools import ReducerMap, as_tuple
 from devito.types.args import ArgProvider
 from devito.types.basic import Scalar
 from devito.types.dense import Function
+from devito.types.utils import DimensionTuple
 from devito.types.dimension import (Dimension, SpaceDimension, TimeDimension,
                                     Spacing, SteppingDimension, SubDimension)
 
@@ -37,7 +38,7 @@ class CartesianDiscretization(ABC):
     @property
     def shape(self):
         """Shape of the physical domain."""
-        return self._shape
+        return DimensionTuple(*self._shape, getters=self.dimensions)
 
     @property
     def dimensions(self):
@@ -222,11 +223,17 @@ class Grid(CartesianDiscretization, ArgProvider):
         return dict(zip(self.origin_symbols, self.origin))
 
     @property
-    def origin_offset(self):
-        """Offset of the local (per-process) origin from the domain origin."""
+    def origin_ioffset(self):
+        """Offset index of the local (per-process) origin from the domain origin."""
         grid_origin = [min(i) for i in self.distributor.glb_numb]
         assert len(grid_origin) == len(self.spacing)
-        return tuple(i*h for i, h in zip(grid_origin, self.spacing))
+        return DimensionTuple(*grid_origin, getters=self.dimensions)
+
+    @property
+    def origin_offset(self):
+        """Physical offset of the local (per-process) origin from the domain origin."""
+        return DimensionTuple(*[i*h for i, h in zip(self.origin_ioffset, self.spacing)],
+                              getters=self.dimensions)
 
     @property
     def time_dim(self):
@@ -273,7 +280,7 @@ class Grid(CartesianDiscretization, ArgProvider):
                 # Special case subsampling: `Grid.dimensions` -> (xb, yb, zb)`
                 # where `xb, yb, zb` are ConditionalDimensions whose parents
                 # are SpaceDimensions
-                mapper[d.root.spacing] = s/self.dtype(d.factor)
+                mapper[d.root.spacing] = s/self.dtype(d.factor.data)
             elif d.is_Space:
                 # Typical case: `Grid.dimensions` -> (x, y, z)` where `x, y, z` are
                 # the SpaceDimensions
@@ -720,7 +727,8 @@ class SubDomainSet(MultiSubDomain):
 
         # Create the SubDomainSet SubDimensions
         self._dimensions = tuple(
-            MultiSubDimension('%si' % d.name, d, self) for d in grid.dimensions
+            MultiSubDimension('%si%d' % (d.name, counter), d, self)
+            for d in grid.dimensions
         )
 
         # Compute the SubDomainSet shapes
