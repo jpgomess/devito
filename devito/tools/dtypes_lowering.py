@@ -8,7 +8,7 @@ import numpy as np
 from cgen import dtype_to_ctype as cgen_dtype_to_ctype
 
 __all__ = ['int2', 'int3', 'int4', 'float2', 'float3', 'float4', 'double2',  # noqa
-           'double3', 'double4', 'dtypes_vector_mapper',
+           'double3', 'double4', 'dtypes_vector_mapper', 'dtype_to_mpidtype',
            'dtype_to_cstr', 'dtype_to_ctype', 'dtype_to_mpitype', 'dtype_len',
            'ctypes_to_cstr', 'c_restrict_void_p', 'ctypes_vector_mapper',
            'is_external_ctype', 'infer_dtype']
@@ -75,12 +75,15 @@ class DTypesVectorMapper(dict):
 
         self.update(build_dtypes_vector([field_name], [count]))
 
-    def get_base_dtype(self, v):
+    def get_base_dtype(self, v, default=None):
         for (base_dtype, count), dtype in self.items():
             if dtype is v:
                 return base_dtype
 
-        raise ValueError
+        if default is not None:
+            return default
+        else:
+            raise ValueError
 
 
 dtypes_vector_mapper = DTypesVectorMapper()
@@ -104,6 +107,7 @@ def dtype_to_ctype(dtype):
         return ctypes_vector_mapper[dtype]
     except KeyError:
         pass
+
     if issubclass(dtype, ctypes._SimpleCData):
         # Bypass np.ctypeslib's normalization rules such as
         # `np.ctypeslib.as_ctypes_type(ctypes.c_void_p) -> ctypes.c_ulong`
@@ -126,6 +130,14 @@ def dtype_to_mpitype(dtype):
         np.int64: 'MPI_LONG',
         np.float64: 'MPI_DOUBLE'
     }[dtype]
+
+
+def dtype_to_mpidtype(dtype):
+    """
+    Map numpy type to MPI internal types for communication
+    """
+    from devito.mpi import MPI
+    return MPI._typedict[np.dtype(dtype).char]
 
 
 def dtype_len(dtype):
@@ -254,8 +266,10 @@ def infer_dtype(dtypes):
           highest precision;
         * If there's at least one floating dtype, ignore any integer dtypes.
     """
-    fdtypes = {i for i in dtypes if np.issubdtype(i, np.floating)}
+    # Resolve the vector types, if any
+    dtypes = {dtypes_vector_mapper.get_base_dtype(i, i) for i in dtypes}
 
+    fdtypes = {i for i in dtypes if np.issubdtype(i, np.floating)}
     if len(fdtypes) > 1:
         return max(fdtypes, key=lambda i: np.dtype(i).itemsize)
     elif len(fdtypes) == 1:

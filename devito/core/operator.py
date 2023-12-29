@@ -6,7 +6,8 @@ from devito.logger import warning
 from devito.mpi.routines import mpi_registry
 from devito.parameters import configuration
 from devito.operator import Operator
-from devito.tools import as_tuple, is_integer, timed_pass
+from devito.tools import (as_tuple, is_integer, timed_pass,
+                          UnboundTuple, UnboundedMultiTuple)
 from devito.types import NThreads
 
 __all__ = ['CoreOperator', 'CustomOperator',
@@ -327,20 +328,22 @@ class OptOption(object):
     pass
 
 
-class ParTileArg(tuple):
+class ParTileArg(UnboundTuple):
 
-    def __new__(cls, items, shm=0, tag=None):
-        obj = super().__new__(cls, items)
-        obj.shm = shm
+    def __new__(cls, items, rule=None, tag=None):
+        if items is None:
+            items = tuple()
+        obj = super().__new__(cls, *items)
+        obj.rule = rule
         obj.tag = tag
         return obj
 
 
-class ParTile(tuple, OptOption):
+class ParTile(UnboundedMultiTuple, OptOption):
 
     def __new__(cls, items, default=None):
         if not items:
-            return None
+            return UnboundedMultiTuple()
         elif isinstance(items, bool):
             if not default:
                 raise ValueError("Expected `default` value, got None")
@@ -353,7 +356,12 @@ class ParTile(tuple, OptOption):
 
             x = items[0]
             if is_integer(x):
-                # E.g., (32, 4, 8)
+                # E.g., 32
+                items = (ParTileArg(items),)
+
+            elif x is None:
+                # E.g. (None, None); to define the dimensionality of a block,
+                # while the actual shape values remain parametric
                 items = (ParTileArg(items),)
 
             elif isinstance(x, ParTileArg):
@@ -366,14 +374,15 @@ class ParTile(tuple, OptOption):
 
                 try:
                     y = items[1]
-                    if is_integer(y):
-                        # E.g., ((32, 4, 8), 1)
-                        # E.g., ((32, 4, 8), 1, 'tag')
+                    if is_integer(y) or isinstance(y, str) or y is None:
+                        # E.g., ((32, 4, 8), 'rule')
+                        # E.g., ((32, 4, 8), 'rule', 'tag')
                         items = (ParTileArg(*items),)
                     else:
                         try:
-                            # E.g., (((32, 4, 8), 1), ((32, 4, 4), 2))
-                            # E.g., (((32, 4, 8), 1, 'tag0'), ((32, 4, 4), 2, 'tag1'))
+                            # E.g., (((32, 4, 8), 'rule'), ((32, 4, 4), 'rule'))
+                            # E.g., (((32, 4, 8), 'rule0', 'tag0'),
+                            #        ((32, 4, 4), 'rule1', 'tag1'))
                             items = tuple(ParTileArg(*i) for i in items)
                         except TypeError:
                             # E.g., ((32, 4, 8), (32, 4, 4))
@@ -386,7 +395,7 @@ class ParTile(tuple, OptOption):
         else:
             raise ValueError("Expected bool or iterable, got %s instead" % type(items))
 
-        obj = super().__new__(cls, items)
+        obj = super().__new__(cls, *items)
         obj.default = as_tuple(default)
 
         return obj

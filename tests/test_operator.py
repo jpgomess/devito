@@ -142,7 +142,7 @@ class TestCodeGen(object):
         a_dense = Function(name='a_dense', grid=grid)
         const = Constant(name='constant')
         eqn = Eq(a_dense, a_dense + 2.*const)
-        op = Operator(eqn, openmp=False)
+        op = Operator(eqn, opt=('advanced', {'openmp': False}))
         assert len(op.parameters) == 5
         assert op.parameters[0].name == 'a_dense'
         assert op.parameters[0].is_AbstractFunction
@@ -521,7 +521,7 @@ class TestArithmetic(object):
         Test injection of a SparseFunction into a Function
         """
         grid = Grid(shape=(11, 11))
-        u = Function(name='u', grid=grid, space_order=0)
+        u = Function(name='u', grid=grid, space_order=1)
 
         sf1 = SparseFunction(name='s', grid=grid, npoint=1)
         op = Operator(sf1.inject(u, expr=sf1))
@@ -542,7 +542,7 @@ class TestArithmetic(object):
         Test interpolation of a SparseFunction from a Function
         """
         grid = Grid(shape=(11, 11))
-        u = Function(name='u', grid=grid, space_order=0)
+        u = Function(name='u', grid=grid, space_order=1)
 
         sf1 = SparseFunction(name='s', grid=grid, npoint=1)
         op = Operator(sf1.interpolate(u))
@@ -563,7 +563,7 @@ class TestArithmetic(object):
         Test injection of a SparseTimeFunction into a TimeFunction
         """
         grid = Grid(shape=(11, 11))
-        u = TimeFunction(name='u', grid=grid, time_order=2, save=5, space_order=0)
+        u = TimeFunction(name='u', grid=grid, time_order=2, save=5, space_order=1)
 
         sf1 = SparseTimeFunction(name='s', grid=grid, npoint=1, nt=5)
         op = Operator(sf1.interpolate(u))
@@ -586,7 +586,7 @@ class TestArithmetic(object):
         Test injection of a SparseTimeFunction from a TimeFunction
         """
         grid = Grid(shape=(11, 11))
-        u = TimeFunction(name='u', grid=grid, time_order=2, save=5, space_order=0)
+        u = TimeFunction(name='u', grid=grid, time_order=2, save=5, space_order=1)
 
         sf1 = SparseTimeFunction(name='s', grid=grid, npoint=1, nt=5)
         op = Operator(sf1.inject(u, expr=3*sf1))
@@ -611,7 +611,7 @@ class TestArithmetic(object):
         Test injection of the time deivative of a SparseTimeFunction into a TimeFunction
         """
         grid = Grid(shape=(11, 11))
-        u = TimeFunction(name='u', grid=grid, time_order=2, save=5, space_order=0)
+        u = TimeFunction(name='u', grid=grid, time_order=2, save=5, space_order=1)
 
         sf1 = SparseTimeFunction(name='s', grid=grid, npoint=1, nt=5, time_order=2)
 
@@ -707,6 +707,8 @@ class TestApplyArguments(object):
             if isinstance(v, (Function, SparseFunction)):
                 condition = v._C_as_ndarray(arguments[name])[v._mask_domain] == v.data
                 condition = condition.all()
+            elif isinstance(arguments[name], range):
+                condition = arguments[name].start <= v < arguments[name].stop
             else:
                 condition = arguments[name] == v
 
@@ -738,7 +740,7 @@ class TestApplyArguments(object):
         grid = Grid(shape=(5, 6, 7))
         f = TimeFunction(name='f', grid=grid)
         g = Function(name='g', grid=grid)
-        op = Operator(Eq(f.forward, g + f), openmp=False)
+        op = Operator(Eq(f.forward, g + f), opt=('advanced', {'openmp': False}))
 
         expected = {
             'x_m': 0, 'x_M': 4,
@@ -1800,20 +1802,20 @@ class TestLoopScheduling(object):
         eqn4 = sf2.interpolate(u2)
 
         # Note: opts disabled only because with OpenMP otherwise there might be more
-        # `trees` than 4
+        # `trees` than 6
         op = Operator([eqn1] + eqn2 + [eqn3] + eqn4, opt=('noop', {'openmp': False}))
         trees = retrieve_iteration_tree(op)
-        assert len(trees) == 4
+        assert len(trees) == 5
         # Time loop not shared due to the WAR
         assert trees[0][0].dim is time and trees[0][0] is trees[1][0]  # this IS shared
-        assert trees[1][0] is not trees[2][0]
-        assert trees[2][0].dim is time and trees[2][0] is trees[3][0]  # this IS shared
+        assert trees[1][0] is not trees[3][0]
+        assert trees[3][0].dim is time and trees[3][0] is trees[4][0]  # this IS shared
 
         # Now single, shared time loop expected
         eqn2 = sf1.inject(u1.forward, expr=sf1)
         op = Operator([eqn1] + eqn2 + [eqn3] + eqn4, opt=('noop', {'openmp': False}))
         trees = retrieve_iteration_tree(op)
-        assert len(trees) == 4
+        assert len(trees) == 5
         assert all(trees[0][0] is i[0] for i in trees)
 
     def test_scheduling_with_free_dims(self):
@@ -1875,7 +1877,7 @@ class TestLoopScheduling(object):
 
         # No surprises here -- the third equation gets swapped with the second
         # one so as to be fused with the first equation
-        op0 = Operator(eqns0, openmp=True)
+        op0 = Operator(eqns0, opt=('advanced', {'openmp': True}))
         assert_structure(op0, ['t,x,y,z', 't', 't,z'], 't,x,y,z,z')
 
         class DummyBarrier(sympy.Function, Barrier):
@@ -1884,14 +1886,14 @@ class TestLoopScheduling(object):
         eqns1 = list(eqns0)
         eqns1[1] = Eq(Symbol('dummy'), DummyBarrier(time))
 
-        op1 = Operator(eqns1, openmp=True)
+        op1 = Operator(eqns1, opt=('advanced', {'openmp': True}))
         assert_structure(op1, ['t,x,y,z', 't', 't,x,y,z'], 't,x,y,z,x,y,z')
 
         # Again, but now a swap is performed *before* the barrier so it's legal
         eqns2 = list(eqns0)
         eqns2.append(eqns1[1])
 
-        op2 = Operator(eqns2, openmp=True)
+        op2 = Operator(eqns2, opt=('advanced', {'openmp': True}))
         assert_structure(op2, ['t,x,y,z', 't', 't,z'], 't,x,y,z,z')
 
     def test_array_shared_w_topofuse(self):
@@ -1913,7 +1915,7 @@ class TestLoopScheduling(object):
         # For thread-shared Arrays, WAR dependencies shouldn't prevent topo-fusion
         # opportunities, since they're not really WAR's as classic Lamport
         # theory would tag
-        op = Operator(eqns, openmp=True)
+        op = Operator(eqns, opt=('advanced', {'openmp': True}))
         assert_structure(op, ['x,y', 'i,x,y'], 'x,y,i,x,y')
 
     def test_topofuse_w_numeric_dim(self):
@@ -1933,6 +1935,58 @@ class TestLoopScheduling(object):
         op = Operator(eqns)
 
         assert_structure(op, ['r,i', 'r'], 'r,i')
+
+    @pytest.mark.parametrize('eqns, expected, exp_trees, exp_iters', [
+        (['Eq(u[0, x], 1)',
+            'Eq(u[1, x], u[0, x + h_x] + u[0, x - h_x] - 2*u[0, x])'],
+            np.array([[1., 1., 1.], [-1., 0., -1.]]),
+            ['x', 'x'], 'x,x')
+    ])
+    def test_2194(self, eqns, expected, exp_trees, exp_iters):
+        grid = Grid(shape=(3, ))
+        u = TimeFunction(name='u', grid=grid)
+        x = grid.dimensions[0]
+        h_x = x.spacing  # noqa: F841
+
+        for i, e in enumerate(list(eqns)):
+            eqns[i] = eval(e)
+
+        op = Operator(eqns)
+        assert_structure(op, exp_trees, exp_iters)
+
+        op.apply()
+        assert(np.all(u.data[:] == expected[:]))
+
+    @pytest.mark.parametrize('eqns, expected, exp_trees, exp_iters', [
+        (['Eq(u[0, y], 1)', 'Eq(u[1, y], u[0, y + 1])'],
+            np.array([[1., 1.], [1., 0.]]),
+            ['y', 'y'], 'y,y'),
+        (['Eq(u[0, y], 1)', 'Eq(u[1, y], u[0, 2])'],
+            np.array([[1., 1.], [0., 0.]]),
+            ['y', 'y'], 'y,y'),
+        (['Eq(u[0, y], 1)', 'Eq(u[1, y], u[0, 1])'],
+            np.array([[1., 1.], [1., 1.]]),
+            ['y', 'y'], 'y,y'),
+        (['Eq(u[0, y], 1)', 'Eq(u[1, y], u[0, y + 1])'],
+            np.array([[1., 1.], [1., 0.]]),
+            ['y', 'y'], 'y,y'),
+        (['Eq(u[0, 1], 1)', 'Eq(u[x, y], u[0, y])'],
+            np.array([[0., 1.], [0., 1.]]),
+            ['xy'], 'x,y')
+    ])
+    def test_2194_v2(self, eqns, expected, exp_trees, exp_iters):
+        grid = Grid(shape=(2, 2))
+        u = Function(name='u', grid=grid)
+        x, y = grid.dimensions
+
+        for i, e in enumerate(list(eqns)):
+            eqns[i] = eval(e)
+
+        op = Operator(eqns)
+        assert_structure(op, exp_trees, exp_iters)
+
+        op.apply()
+        assert(np.all(u.data[:] == expected[:]))
 
 
 class TestInternals(object):

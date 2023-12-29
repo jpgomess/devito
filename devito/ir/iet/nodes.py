@@ -185,7 +185,7 @@ class List(Node):
 
     def __init__(self, header=None, body=None, footer=None):
         body = as_tuple(body)
-        if len(body) == 1 and all(type(i) == List for i in [self, body[0]]):
+        if len(body) == 1 and all(type(i) is List for i in [self, body[0]]):
             # De-nest Lists
             #
             # Note: to avoid disgusting metaclass voodoo (due to
@@ -363,8 +363,9 @@ class Expression(ExprStmt, Node):
         self.operation = operation
 
     def __repr__(self):
-        return "<%s::%s>" % (self.__class__.__name__,
-                             filter_ordered([f.func for f in self.functions]))
+        return "<%s::%s=%s>" % (self.__class__.__name__,
+                                type(self.write),
+                                ','.join('%s' % type(f) for f in self.functions))
 
     @property
     def dtype(self):
