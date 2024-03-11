@@ -11,7 +11,11 @@ class ISOSeismicModel(SeismicModel):
         self.rho = self._gen_phys_param(rho, 'rho', space_order)
 
         # Initialize elastic with Lame parametrization
-        vs = kwargs.pop('vs')
+        try:
+            vs = kwargs.pop('vs')
+        except:
+            raise Exception("ISOSeismicModel must receive 'vs' as an argument")
+
         self.lam = self._gen_phys_param((vp**2 - 2. * vs**2)*rho, 'lam', space_order,
                                         is_param=True)
         self.mu = self._gen_phys_param((vs**2) * rho, 'mu', space_order, is_param=True)
