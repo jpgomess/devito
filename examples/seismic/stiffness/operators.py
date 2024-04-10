@@ -35,12 +35,12 @@ def src_rec(v, tau, model, geometry, forward=True):
             src_expr += src_yy
         # Create interpolation expression for receivers
         rec_term_vx = rec_vx.interpolate(expr=v[0])
-        rec_term_vz = rec_vz.interpolate(expr=v[1])
+        rec_term_vz = rec_vz.interpolate(expr=v[-1])
         expr = tau[0] + tau[1]
         rec_expr = rec_term_vx + rec_term_vz
         if model.grid.dim == 3:
             expr += tau[2]
-            rec_term_vy = rec_vy.interpolate(expr=v[2])
+            rec_term_vy = rec_vy.interpolate(expr=v[1])
             rec_expr += rec_term_vy
         rec_term_tau = rec.interpolate(expr=expr)
         rec_expr += rec_term_tau
