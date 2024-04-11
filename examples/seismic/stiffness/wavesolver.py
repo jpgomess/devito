@@ -122,7 +122,7 @@ class IsoElasticWaveSolver(object):
                                                rec_vx=rec_vx, rec_vz=rec_vz,
                                                dt=kwargs.pop('dt', self.dt), **kwargs)
         if self.model.grid.dim == 3:
-            return rec_tau, rec_vx, rec_vz, v, tau, summary, rec_vy
+            return rec_tau, rec_vx, rec_vy, rec_vz, v, tau, summary
         return rec_tau, rec_vx, rec_vz, v, tau, summary
 
     def adjoint(self, rec, srca=None, u=None, sig=None, model=None, par='lam-mu',
