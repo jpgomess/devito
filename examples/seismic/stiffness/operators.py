@@ -199,7 +199,6 @@ def ForwardOperator(model, geometry, space_order=4, save=False, par='lam-mu', **
                            save=geometry.nt if save else None,
                            space_order=space_order, time_order=1)
     tau = TensorTimeFunction(name='tau', grid=model.grid,
-                             save=geometry.nt if save else None,
                              space_order=space_order, time_order=1)
 
     eqn = elastic_stencil(model, v, tau, par=par)
