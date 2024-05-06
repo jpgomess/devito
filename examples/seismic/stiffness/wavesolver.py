@@ -103,7 +103,7 @@ class IsoElasticWaveSolver(object):
         save_t = src.nt if save else None
         v = v or VectorTimeFunction(name='v', grid=self.model.grid, save=save_t,
                                     space_order=self.space_order, time_order=1)
-        tau = tau or TensorTimeFunction(name='tau', grid=self.model.grid, save=save_t,
+        tau = tau or TensorTimeFunction(name='tau', grid=self.model.grid,
                                         space_order=self.space_order, time_order=1)
         kwargs.update({k.name: k for k in v})
         kwargs.update({k.name: k for k in tau})
