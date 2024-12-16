@@ -7,12 +7,14 @@ import sympy
 
 from mpmath.libmp import prec_to_dps, to_str
 from packaging.version import Version
+
 from sympy.logic.boolalg import BooleanFunction
 from sympy.printing.precedence import PRECEDENCE_VALUES, precedence
 from sympy.printing.c import C99CodePrinter
 
 from devito.arch.compiler import AOMPCompiler
-from devito.symbolics.inspection import has_integer_args
+from devito.symbolics.inspection import has_integer_args, sympy_dtype
+from devito.types import Array
 from devito.types.basic import AbstractFunction
 
 __all__ = ['ccode']
@@ -39,6 +41,10 @@ class CodePrinter(C99CodePrinter):
     def compiler(self):
         return self._settings['compiler']
 
+    def single_prec(self, expr=None):
+        dtype = sympy_dtype(expr) if expr is not None else self.dtype
+        return dtype in [np.float32, np.float16]
+
     def parenthesize(self, item, level, strict=False):
         if isinstance(item, BooleanFunction):
             return "(%s)" % self._print(item)
@@ -53,7 +59,9 @@ class CodePrinter(C99CodePrinter):
             return super()._print_Function(expr)
 
     def _print_CondEq(self, expr):
-        return "%s == %s" % (self._print(expr.lhs), self._print(expr.rhs))
+        lhs = expr.lhs if not isinstance(expr.lhs, Array) else expr.lhs._C_name
+        rhs = expr.rhs if not isinstance(expr.rhs, Array) else expr.rhs._C_name
+        return "%s == %s" % (self._print(lhs), self._print(rhs))
 
     def _print_Indexed(self, expr):
         """
@@ -75,7 +83,11 @@ class CodePrinter(C99CodePrinter):
         U[t,x,y,z] -> U(t,x,y,z)
         """
         inds = ', '.join(self._print(x) for x in expr.indices)
-        return '%s(%s)' % (self._print(expr.base.label), inds)
+        try:
+            label = expr.accessor.label
+        except AttributeError:
+            label = expr.base.label
+        return '%s(%s)' % (self._print(label), inds)
 
     def _print_Rational(self, expr):
         """Print a Rational as a C-like float/float division."""
@@ -89,11 +101,29 @@ class CodePrinter(C99CodePrinter):
         else:
             return '%d.0F/%d.0F' % (p, q)
 
+    def _print_math_func(self, expr, nest=False, known=None):
+        cls = type(expr)
+        name = cls.__name__
+        if name not in self._prec_funcs:
+            return super()._print_math_func(expr, nest=nest, known=known)
+
+        try:
+            cname = self.known_functions[name]
+        except KeyError:
+            return super()._print_math_func(expr, nest=nest, known=known)
+
+        if self.single_prec(expr):
+            cname = '%sf' % cname
+
+        args = ', '.join((self._print(arg) for arg in expr.args))
+
+        return '%s(%s)' % (cname, args)
+
     def _print_Pow(self, expr):
         # Need to override because of issue #1627
         # E.g., (Pow(h_x, -1) AND h_x.dtype == np.float32) => 1.0F/h_x
         try:
-            if expr.exp == -1 and self.dtype == np.float32:
+            if expr.exp == -1 and self.single_prec():
                 PREC = precedence(expr)
                 return '1.0F/%s' % self.parenthesize(expr.base, PREC)
         except AttributeError:
@@ -159,6 +189,7 @@ class CodePrinter(C99CodePrinter):
             dps = 0
         else:
             dps = prec_to_dps(expr._prec)
+
         if self._settings["full_prec"] is True:
             strip = False
         elif self._settings["full_prec"] is False:
@@ -169,12 +200,16 @@ class CodePrinter(C99CodePrinter):
         rv = to_str(expr._mpf_, dps, strip_zeros=strip, max_fixed=-2, min_fixed=2)
 
         if rv.startswith('-.0'):
-            rv = '-0.' + rv[3:]
+            rv = "-0." + rv[3:]
         elif rv.startswith('.0'):
-            rv = '0.' + rv[2:]
+            rv = "0." + rv[2:]
 
-        if self.dtype == np.float32:
-            rv = rv + 'F'
+        # Remove trailing zero except first one to avoid 1. instead of 1.0
+        if 'e' not in rv:
+            rv = rv.rstrip('0') + "0"
+
+        if self.single_prec():
+            rv = '%sF' % rv
 
         return rv
 
@@ -186,6 +221,10 @@ class CodePrinter(C99CodePrinter):
     def _print_CallFromPointer(self, expr):
         indices = [self._print(i) for i in expr.params]
         return "%s->%s(%s)" % (expr.pointer, expr.call, ', '.join(indices))
+
+    def _print_CallFromComposite(self, expr):
+        indices = [self._print(i) for i in expr.params]
+        return "%s.%s(%s)" % (expr.pointer, expr.call, ', '.join(indices))
 
     def _print_FieldFromPointer(self, expr):
         return "%s->%s" % (expr.pointer, expr.field)
@@ -225,22 +264,35 @@ class CodePrinter(C99CodePrinter):
 
     def _print_TrigonometricFunction(self, expr):
         func_name = str(expr.func)
-        if self.dtype == np.float32:
-            func_name += 'f'
+        if self.single_prec():
+            func_name = '%sf' % func_name
         return '%s(%s)' % (func_name, self._print(*expr.args))
 
     def _print_DefFunction(self, expr):
         arguments = [self._print(i) for i in expr.arguments]
-        return "%s(%s)" % (expr.name, ','.join(arguments))
+        if expr.template:
+            template = '<%s>' % ','.join([str(i) for i in expr.template])
+        else:
+            template = ''
+        return "%s%s(%s)" % (expr.name, template, ','.join(arguments))
+
+    _print_MathFunction = _print_DefFunction
 
     def _print_Fallback(self, expr):
         return expr.__str__()
 
+    _print_Namespace = _print_Fallback
+    _print_Rvalue = _print_Fallback
     _print_MacroArgument = _print_Fallback
     _print_IndexedBase = _print_Fallback
     _print_IndexSum = _print_Fallback
-    _print_Keyword = _print_Fallback
+    _print_ReservedWord = _print_Fallback
     _print_Basic = _print_Fallback
+
+
+# Lifted from SymPy so that we go through our own `_print_math_func`
+for k in ('exp log sin cos tan ceiling floor').split():
+    setattr(CodePrinter, '_print_%s' % k, CodePrinter._print_math_func)
 
 
 # Always parenthesize IntDiv and InlineIf within expressions

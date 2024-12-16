@@ -1,11 +1,8 @@
 """User API to specify equations."""
-
 import sympy
 
-from cached_property import cached_property
-
-from devito.finite_differences import default_rules
-from devito.tools import as_tuple
+from devito.deprecations import deprecations
+from devito.tools import as_tuple, frozendict
 from devito.types.lazy import Evaluable
 
 __all__ = ['Eq', 'Inc', 'ReduceMax', 'ReduceMin']
@@ -25,15 +22,15 @@ class Eq(sympy.Eq, Evaluable):
     ----------
     lhs : Function or SparseFunction
         The left-hand side.
-    rhs : expr-like, optional
-        The right-hand side. Defaults to 0.
-    subdomain : SubDomain, optional
+    rhs : expr-like, optional, default=0
+        The right-hand side.
+    subdomain : SubDomain, optional, default=None
         To restrict the computation of the Eq to a particular sub-region in the
         computational domain.
-    coefficients : Substitutions, optional
+    coefficients : Substitutions, optional, default=None
         Can be used to replace symbolic finite difference weights with user
         defined weights.
-    implicit_dims : Dimension or list of Dimension, optional
+    implicit_dims : Dimension or list of Dimension, optional, default=None
         An ordered list of Dimensions that do not explicitly appear in either the
         left-hand side or in the right-hand side, but that should be honored when
         constructing an Operator.
@@ -65,13 +62,42 @@ class Eq(sympy.Eq, Evaluable):
 
     def __new__(cls, lhs, rhs=0, subdomain=None, coefficients=None, implicit_dims=None,
                 **kwargs):
+        if coefficients is not None:
+            deprecations.coeff_warn
         kwargs['evaluate'] = False
+        # Backward compatibility
+        rhs = cls._apply_coeffs(rhs, coefficients)
+        lhs = cls._apply_coeffs(lhs, coefficients)
+
         obj = sympy.Eq.__new__(cls, lhs, rhs, **kwargs)
+
         obj._subdomain = subdomain
         obj._substitutions = coefficients
         obj._implicit_dims = as_tuple(implicit_dims)
 
         return obj
+
+    @classmethod
+    def _apply_coeffs(cls, expr, coefficients):
+        """
+        This processes legacy API of Substitution/Coefficients applying the weights
+        to the target Derivatives.
+        """
+        from devito.symbolics import retrieve_derivatives
+        if coefficients is None:
+            return expr
+        mapper = {}
+        for coeff in coefficients.coefficients:
+            derivs = [d for d in retrieve_derivatives(expr)
+                      if coeff.dimension in d.dims and
+                      coeff.deriv_order == d.deriv_order.get(coeff.dimension, None)]
+            if not derivs:
+                continue
+            mapper.update({d: d._rebuild(weights=coeff.weights) for d in derivs})
+        if not mapper:
+            return expr
+
+        return expr.xreplace(mapper)
 
     def _evaluate(self, **kwargs):
         """
@@ -88,15 +114,6 @@ class Eq(sympy.Eq, Evaluable):
                        coefficients=self.substitutions,
                        implicit_dims=self._implicit_dims)
 
-        if eq._uses_symbolic_coefficients:
-            # NOTE: As Coefficients.py is expanded we will not want
-            # all rules to be expunged during this procress.
-            rules = default_rules(eq, eq._symbolic_functions)
-            try:
-                eq = eq.xreplace({**eq.substitutions.rules, **rules})
-            except AttributeError:
-                if bool(rules):
-                    eq = eq.xreplace(rules)
         return eq
 
     @property
@@ -106,7 +123,12 @@ class Eq(sympy.Eq, Evaluable):
         """
         if self.lhs.is_Matrix:
             # Maps the Equations to retrieve the rhs from relevant lhs
-            eqs = dict(zip(as_tuple(self.lhs), as_tuple(self.rhs)))
+            try:
+                eqs = dict(zip(self.lhs, self.rhs))
+            except TypeError:
+                # Same rhs for all lhs
+                assert not self.rhs.is_Matrix
+                eqs = {i: self.rhs for i in self.lhs}
             # Get the relevant equations from the lhs structure. .values removes
             # the symmetric duplicates and off-diagonal zeros.
             lhss = self.lhs.values()
@@ -132,26 +154,9 @@ class Eq(sympy.Eq, Evaluable):
     def implicit_dims(self):
         return self._implicit_dims
 
-    @cached_property
-    def _uses_symbolic_coefficients(self):
-        return bool(self._symbolic_functions)
-
-    @cached_property
-    def _symbolic_functions(self):
-        try:
-            return self.lhs._symbolic_functions.union(self.rhs._symbolic_functions)
-        except AttributeError:
-            pass
-        try:
-            return self.lhs._symbolic_functions
-        except AttributeError:
-            pass
-        try:
-            return self.rhs._symbolic_functions
-        except AttributeError:
-            return frozenset()
-        else:
-            TypeError('Failed to retrieve symbolic functions')
+    @property
+    def conditionals(self):
+        return frozendict()
 
     func = Evaluable._rebuild
 

@@ -3,13 +3,15 @@ import pytest
 
 from conftest import assert_structure, get_params, get_arrays, check_array
 from devito import (Buffer, Eq, Function, TimeFunction, Grid, Operator,
-                    Substitutions, Coefficient, cos, sin)
+                    cos, sin)
+from devito.finite_differences import Weights
 from devito.arch.compiler import OneapiCompiler
+from devito.ir import Expression, FindNodes, FindSymbols
 from devito.parameters import switchconfig, configuration
-from devito.types import Symbol
+from devito.types import Symbol, Dimension
 
 
-class TestLoopScheduling(object):
+class TestLoopScheduling:
 
     def test_backward_dt2(self):
         grid = Grid(shape=(4, 4))
@@ -25,44 +27,28 @@ class TestLoopScheduling(object):
         assert_structure(op, ['t,x,y'], 't,x,y')
 
 
-class TestSymbolicCoeffs(object):
-
-    def test_fallback_to_default(self):
-        grid = Grid(shape=(8, 8, 8))
-
-        u = TimeFunction(name='u', grid=grid, coefficients='symbolic',
-                         space_order=4, time_order=2)
-
-        eq = Eq(u.forward, u.dx2 + 1)
-
-        op = Operator(eq, opt=('advanced', {'expand': False}))
-
-        # Ensure all symbols have been resolved
-        op.arguments(dt=1, time_M=10)
-        op.cfunction
+class TestSymbolicCoeffs:
 
     def test_numeric_coeffs(self):
         grid = Grid(shape=(11, 11), extent=(10., 10.))
 
-        u = Function(name='u', grid=grid, coefficients='symbolic', space_order=2)
-        v = Function(name='v', grid=grid, coefficients='symbolic', space_order=2)
-
-        coeffs = Substitutions(Coefficient(2, u, grid.dimensions[0], np.zeros(3)),
-                               Coefficient(2, u, grid.dimensions[1], np.zeros(3)))
+        u = Function(name='u', grid=grid, space_order=2)
+        v = Function(name='v', grid=grid, space_order=2)
 
         opt = ('advanced', {'expand': False})
+        w = np.zeros(3)
 
         # Pure derivative
-        Operator(Eq(u, u.dx2, coefficients=coeffs), opt=opt).cfunction
+        Operator(Eq(u, u.dx2(weights=w)), opt=opt).cfunction
 
         # Mixed derivative
-        Operator(Eq(u, u.dx.dx, coefficients=coeffs), opt=opt).cfunction
+        Operator(Eq(u, u.dx.dx), opt=opt).cfunction
 
         # Non-perfect mixed derivative
-        Operator(Eq(u, (u.dx + v.dx).dx, coefficients=coeffs), opt=opt).cfunction
+        Operator(Eq(u, (u.dx(weights=w) + v.dx).dx), opt=opt).cfunction
 
         # Compound expression
-        Operator(Eq(u, (v*u.dx).dy, coefficients=coeffs), opt=opt).cfunction
+        Operator(Eq(u, (v*u.dx).dy(weights=w)), opt=opt).cfunction
 
     @pytest.mark.parametrize('coeffs,expected', [
         ((7, 7, 7), 1),  # We've had a bug triggered by identical coeffs
@@ -72,28 +58,26 @@ class TestSymbolicCoeffs(object):
         grid = Grid(shape=(11, 11, 11), extent=(10., 10., 10.))
         x, y, z = grid.dimensions
 
-        p = TimeFunction(name='p', grid=grid, space_order=4,
-                         coefficients='symbolic')
+        p = TimeFunction(name='p', grid=grid, space_order=4)
 
         c0, c1, c2 = coeffs
         coeffs0 = np.full(5, c0)
         coeffs1 = np.full(5, c1)
         coeffs2 = np.full(5, c2)
 
-        subs = Substitutions(Coefficient(1, p, x, coeffs0),
-                             Coefficient(1, p, y, coeffs1),
-                             Coefficient(1, p, z, coeffs2))
-
-        eq = Eq(p.forward, p.dy.dz + p.dx.dy, coefficients=subs)
+        eq = Eq(p.forward, p.dy(weights=coeffs1).dz(weights=coeffs2) +
+                p.dx(weights=coeffs0).dy(weights=coeffs1))
 
         op = Operator(eq, opt=('advanced', {'expand': False}))
         op.cfunction
 
         # w0, w1, ...
-        assert len(op._globals) == expected
+        functions = FindSymbols().visit(op)
+        weights = {f for f in functions if isinstance(f, Weights)}
+        assert len(weights) == expected
 
 
-class Test1Pass(object):
+class Test1Pass:
 
     def test_v0(self):
         grid = Grid(shape=(10, 10, 10))
@@ -223,7 +207,7 @@ class Test1Pass(object):
                                         'cire-mingain': 400}))
 
         # Check code generation
-        assert op._profiler._sections['section1'].sops == 1442
+        assert op._profiler._sections['section1'].sops == 1443
         assert_structure(op, ['x,y,z',
                               't,x0_blk0,y0_blk0,x,y,z',
                               't,x0_blk0,y0_blk0,x,y,z,i1',
@@ -300,9 +284,59 @@ class Test1Pass(object):
         op1.apply(time_M=10, u=u1)
         assert np.allclose(u.data, u1.data, rtol=10e-6)
 
+    def test_redundant_derivatives(self):
+        grid = Grid(shape=(10, 10, 10))
 
-class Test2Pass(object):
+        f = Function(name='f', grid=grid)
+        g = Function(name='g', grid=grid)
+        h = Function(name='h', grid=grid)
+        u = TimeFunction(name='u', grid=grid, space_order=4)
 
+        # It's the same `u.dx.dy` appearing multiple times, and the cost models
+        # must be smart enough to detect that!
+        eq = Eq(u.forward, (f*u.dx.dy + g*u.dx.dy + h*u.dx.dy +
+                            (f*g)*u.dx.dy + (f*h)*u.dx.dy + (g*h)*u.dx.dy))
+
+        op = Operator(eq, opt=('advanced', {'expand': False,
+                                            'blocklevels': 0}))
+
+        # Check generated code
+        assert len(get_arrays(op)) == 0
+        assert op._profiler._sections['section0'].sops == 74
+        exprs = FindNodes(Expression).visit(op)
+        assert len(exprs) == 5
+        temps = [i for i in FindSymbols().visit(exprs) if isinstance(i, Symbol)]
+        assert len(temps) == 2
+
+        op.cfunction
+
+    def test_buffering_timestencil(self):
+        grid = Grid((11, 11))
+        so = 4
+        nt = 11
+
+        u = TimeFunction(name="u", grid=grid, space_order=so, time_order=2, save=nt)
+        v = TimeFunction(name="v", grid=grid, space_order=so, time_order=2)
+
+        g = Function(name="g", grid=grid, space_order=so)
+
+        # Make sure operator builds with buffering
+        op = Operator([Eq(g, g + u.dt*v.dx + u.dx2)],
+                      opt=('buffering', 'streaming', {'expand': False}))
+
+        exprs = FindNodes(Expression).visit(op)
+        dims = [d for i in FindSymbols().visit(exprs) for d in i.dimensions
+                if isinstance(d, Dimension)]
+
+        # Should only be two stencil dimension for .dx and .dx2
+        assert len([d for d in dims if d.is_Stencil]) == 2
+        # Should only be one buffer dimension
+        assert len([d for d in dims if d.is_Custom]) == 1
+
+
+class Test2Pass:
+
+    @switchconfig(safe_math=True)
     def test_v0(self):
         grid = Grid(shape=(10, 10, 10))
 
@@ -312,14 +346,14 @@ class Test2Pass(object):
         v1 = TimeFunction(name='v', grid=grid, space_order=8)
 
         eqns = [Eq(u.forward, (u.dx.dy + v*u + 1.)),
-                Eq(v.forward, (v + u.dx.dy + 1.))]
+                Eq(v.forward, (v + u.dx.dz + 1.))]
 
         op0 = Operator(eqns)
         op1 = Operator(eqns, opt=('advanced', {'expand': False,
                                                'openmp': True}))
 
         # Check generated code
-        assert op1._profiler._sections['section0'].sops == 41
+        assert op1._profiler._sections['section0'].sops == 59
         assert_structure(op1, ['t',
                                't,x0_blk0,y0_blk0,x,y,z',
                                't,x0_blk0,y0_blk0,x,y,z,i0',
@@ -343,7 +377,7 @@ class Test2Pass(object):
                                         'openmp': False}))
 
         # Check code generation
-        assert op._profiler._sections['section1'].sops == 190
+        assert op._profiler._sections['section1'].sops == 191
         assert_structure(op, ['x,y,z',
                               't,x0_blk0,y0_blk0,x,y,z',
                               't,x0_blk0,y0_blk0,x,y,z,i0',

@@ -1,15 +1,19 @@
-from ctypes import c_double, c_void_p
-
+from ctypes import c_double, c_void_p, c_int, Structure, c_uint64, c_int64, c_int
 import numpy as np
 import sympy
-from sympy.core.core import ordering_of_classes
+try:
+    from sympy.core.core import ordering_of_classes
+except ImportError:
+    # Moved in 1.13
+    from sympy.core.basic import ordering_of_classes
 
-from devito.types import Array, CompositeObject, Indexed, Symbol
+from devito.types import Array, CompositeObject, Indexed, Symbol, LocalObject
 from devito.types.basic import IndexedData
-from devito.tools import Pickable, as_tuple
+from devito.tools import Pickable, frozendict
 
 __all__ = ['Timer', 'Pointer', 'VolatileInt', 'FIndexed', 'Wildcard', 'Fence',
-           'Global', 'Hyperplane', 'Indirection', 'Temp', 'TempArray', 'Jump',
+           'Global', 'Hyperplane', 'Indirection', 'Temp', 'TempArray', 'Jump', 'FILE', 
+           'off_t', 'size_t', 'zfp_type', 'zfp_field', 'bitstream', 'zfp_stream',
            'nop', 'WeakFence', 'CriticalRegion']
 
 
@@ -17,8 +21,8 @@ class Timer(CompositeObject):
 
     __rargs__ = ('name', 'sections')
 
-    def __init__(self, name, sections):
-        super().__init__(name, 'profiler', [(i, c_double) for i in sections])
+    def __init__(self, name, sections, **kwargs):
+        super().__init__(name, 'profiler', [(i, c_double) for i in sections], **kwargs)
 
     def reset(self):
         for i in self.fields:
@@ -60,30 +64,30 @@ class Wildcard(Symbol):
 class FIndexed(Indexed, Pickable):
 
     """
-    A flatten Indexed with functional (primary) and indexed (secondary) representations.
+    An FIndexed is a symbolic object used to represent a multidimensional
+    array in symbolic equations. It is a subclass of Indexed, and as such
+    it has a base (the symbol representing the array) and a number of indices.
 
-    Examples
-    --------
-    Consider the Indexed `u[x, y]`. The corresponding FIndexed's functional representation
-    is `u(x, y)`. This is a multidimensional representation, just like any other Indexed.
-    The corresponding indexed (secondary) represenation is instead flatten, that is
-    `uX[x*ny + y]`, where `X` is a string provided by the caller.
+    However, unlike Indexed, the representation of an FIndexed is functional,
+    e.g., `u(x, y)`, rather than explicit, e.g., `u[x, y]`.
+
+    An FIndexed also carries the necessary information to generate a 1-dimensional
+    representation of the array, which is necessary when dealing with actual
+    memory accesses. For example, an FIndexed carries the strides of the array,
+    which ultimately allow to compute the actual memory address of an element.
+    For example, the FIndexed `u(x, y)` corresponds to the indexed representation
+    `u[x*ny + y]`, where `ny` is the stride of the array `u` along the y-axis.
     """
 
     __rargs__ = ('base', '*indices')
-    __rkwargs__ = ('strides',)
+    __rkwargs__ = ('strides_map', 'accessor')
 
-    def __new__(cls, base, *args, strides=None):
+    def __new__(cls, base, *args, strides_map=None, accessor=None):
         obj = super().__new__(cls, base, *args)
-        obj.strides = as_tuple(strides)
+        obj.strides_map = frozendict(strides_map or {})
+        obj.accessor = accessor
 
         return obj
-
-    @classmethod
-    def from_indexed(cls, indexed, pname, strides=None):
-        label = Symbol(name=pname, dtype=indexed.dtype)
-        base = IndexedData(label, None, function=indexed.function)
-        return FIndexed(base, *indexed.indices, strides=strides)
 
     def __repr__(self):
         return "%s(%s)" % (self.name, ", ".join(str(i) for i in self.indices))
@@ -91,17 +95,18 @@ class FIndexed(Indexed, Pickable):
     __str__ = __repr__
 
     def _hashable_content(self):
-        return super()._hashable_content() + (self.strides,)
+        accessor = self.accessor or 0  # Avoids TypeError inside sympy.Basic.compare
+        return super()._hashable_content() + (self.strides, accessor)
 
     func = Pickable._rebuild
 
     @property
     def name(self):
-        return self.function.name
+        return self.base.name
 
     @property
-    def pname(self):
-        return self.base.name
+    def strides(self):
+        return tuple(self.strides_map.values())
 
     @property
     def free_symbols(self):
@@ -110,6 +115,39 @@ class FIndexed(Indexed, Pickable):
         # the address calculation just like all other free_symbols
         return (super().free_symbols |
                 set().union(*[i.free_symbols for i in self.strides]))
+
+    def bind(self, pname):
+        """
+        Generate a 2-tuple:
+
+            * A macro which expands to the 1-dimensional representation of the
+              FIndexed, e.g. `aL0(t,x,y) -> a[(t)*x_stride0 + (x)*y_stride0 + (y)]`
+            * A new FIndexed, with the same indices as `self`, but with a new
+              base symbol named after `pname`, e.g. `aL0(t, x+1, y-2)`, where
+              `aL0` is given by the `pname`.
+        """
+        b = self.base
+        f = self.function
+        strides_map = self.strides_map
+
+        # TODO: resolve circular import. This is a tough one though, as it
+        # requires a complete rethinking of `symbolics` vs `types` folders
+        from devito.symbolics import DefFunction, MacroArgument
+
+        macroargnames = [d.name for d in f.dimensions]
+        macroargs = [MacroArgument(i) for i in macroargnames]
+
+        items = [m*strides_map[d] for m, d in zip(macroargs, f.dimensions[1:])]
+        items.append(MacroArgument(f.dimensions[-1].name))
+
+        define = DefFunction(pname, macroargnames)
+        expr = Indexed(b, sympy.Add(*items, evaluate=False))
+
+        label = Symbol(name=pname, dtype=self.dtype)
+        accessor = IndexedData(label, None, function=f)
+        findexed = self.func(accessor=accessor)
+
+        return ((define, expr), findexed)
 
     func = Pickable._rebuild
 
@@ -137,16 +175,17 @@ class Hyperplane(tuple):
         return frozenset().union(*[i._defines for i in self])
 
 
-class Pointer(Symbol):
+class Pointer(LocalObject):
 
-    @classmethod
-    def __dtype_setup__(cls, **kwargs):
-        return kwargs.get('dtype', c_void_p)
+    __rkwargs__ = LocalObject.__rkwargs__ + ('dtype',)
+
+    def __init__(self, *args, dtype=c_void_p, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._dtype = dtype
 
     @property
-    def _C_ctype(self):
-        # `dtype` is a ctypes-derived type!
-        return self.dtype
+    def dtype(self):
+        return self._dtype
 
 
 class Indirection(Symbol):
@@ -186,6 +225,134 @@ class Temp(Symbol):
     ordering_of_classes.insert(ordering_of_classes.index('Symbol') + 1, 'Temp')
 
 
+class FILE(Structure):
+    """
+    Class representing the FILE structure type in C/C++.
+    """
+    _fields_ = [("FILE", c_int)]
+    
+    
+class off_t(c_int64):
+    
+    """
+    Class representing the off_t type in C/C++
+    """
+
+    pass
+
+class size_t(c_uint64):
+    
+    """
+    Class representing the size_t type in C/C++
+    """
+
+    pass
+
+### Compression specific classes ###
+class zfp_type(c_int):
+    
+    # NOTE: I don't know how to specify an unspecified type
+    # NOTE: Maybe the more appropriate solution is making zfp_type subclass of Structure and develop it with __fields__,
+    # but devito does not translate it the way I want
+    
+    """
+    Class representing:
+    
+    typedef enum {
+        zfp_type_none   = 0, // unspecified type
+        zfp_type_int32  = 1, // 32-bit signed integer
+        zfp_type_int64  = 2, // 64-bit signed integer
+        zfp_type_float  = 3, // single precision floating point
+        zfp_type_double = 4  // double precision floating point
+    } zfp_type;
+    """    
+    # _fields_ = [
+    #     # ("zfp_type_int32", c_int32),
+    #     # ("zfp_type_int64", c_int64),
+    #     # ("zfp_type_float", c_float),
+    #     # ("zfp_type_double", c_double)
+    # ]
+    pass
+    
+class zfp_field(c_int):
+    
+    # NOTE: Maybe the more appropriate solution is making zfp_field subclass of Structure and develop it with __fields__,
+    # but devito does not translate it the way I want
+    
+    """
+    Class representing:
+    
+    typedef struct {
+        zfp_type type;            // scalar type (e.g., int32, double)
+        size_t nx, ny, nz, nw;    // sizes (zero for unused dimensions)
+        ptrdiff_t sx, sy, sz, sw; // strides (zero for contiguous array a[nw][nz][ny][nx])
+        void* data;               // pointer to array data
+    } zfp_field;
+    """
+    
+    # _fields_ = [
+    #     ("zfp_field", c_float),
+    #     ("type", zfp_type),
+    #     ("nx", c_size_t), ("ny", c_size_t), ("nz", c_size_t),("nw", c_size_t),
+    #     ("sx", c_int), ("sy", c_int), ("sz", c_int),("sw", c_int),
+    #     ("data", c_void_p)
+    # ]
+    pass
+
+class bitstream(c_int):
+    
+    # NOTE: Maybe the more appropriate solution is making bitstream subclass of Structure and develop it with __fields__,
+    # but devito does not translate it the way I want
+    
+    """
+    Class representing:
+    
+    struct bitstream {
+        bitstream_count bits;  // number of buffered bits (0 <= bits < word size)
+        bitstream_word buffer; // incoming/outgoing bits (buffer < 2^bits)
+        bitstream_word* ptr;   // pointer to next word to be read/written
+        bitstream_word* begin; // beginning of stream
+        bitstream_word* end;   // end of stream (not enforced)
+        size_t mask;           // one less the block size in number of words (if BIT_STREAM_STRIDED)
+        ptrdiff_t delta;       // number of words between consecutive blocks (if BIT_STREAM_STRIDED)
+    };
+    """
+    
+    # _fields_ = [
+    #     ("minbits", c_uint),
+    #     ("maxbits", c_uint), 
+    #     ("maxprec", c_uint), 
+    #     ("minexp", c_int)
+    # ]
+    pass
+
+class zfp_stream(c_int):
+    
+    # NOTE: Maybe the more appropriate solution is making zfp_stream subclass of Structure and develop it with __fields__,
+    # but devito does not translate it the way I want
+    
+    """
+    Class representing:
+    
+    typedef struct {
+        uint minbits;       // minimum number of bits to store per block
+        uint maxbits;       // maximum number of bits to store per block
+        uint maxprec;       // maximum number of bit planes to store
+        int minexp;         // minimum floating point bit plane number to store
+        bitstream* stream;  // compressed bit stream
+        zfp_execution exec; // execution policy and parameters
+    } zfp_stream;
+    """
+    
+    # _fields_ = [
+    #     ("minbits", c_uint),
+    #     ("maxbits", c_uint), 
+    #     ("maxprec", c_uint), 
+    #     ("minexp", c_int)
+    # ]    
+    pass
+    
+
 class TempArray(Array):
 
     """
@@ -193,10 +360,16 @@ class TempArray(Array):
     sub-expressions.
     """
 
-    pass
+    is_autopaddable = True
+
+    def __padding_setup__(self, **kwargs):
+        padding = kwargs.pop('padding', None)
+        if padding is None:
+            padding = self.__padding_setup_smart__(**kwargs)
+        return super().__padding_setup__(padding=padding, **kwargs)
 
 
-class Fence(object):
+class Fence:
 
     """
     Mixin class for generic "fence" objects.

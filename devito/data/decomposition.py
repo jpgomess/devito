@@ -1,7 +1,7 @@
 from collections.abc import Iterable
+from functools import cached_property
 
 import numpy as np
-from cached_property import cached_property
 
 from devito.data.meta import LEFT
 from devito.tools import is_integer, as_tuple
@@ -59,7 +59,7 @@ class Decomposition(tuple):
             raise TypeError("Illegal Decomposition element type")
         if not is_integer(local) and (0 <= local < len(items)):
             raise ValueError("`local` must be an index in ``items``.")
-        obj = super(Decomposition, cls).__new__(cls, [np.array(i) for i in items])
+        obj = super().__new__(cls, [np.array(i) for i in items])
         obj._local = local
         return obj
 
@@ -320,7 +320,7 @@ class Decomposition(tuple):
             if self.loc_empty:
                 return None
             abs_ofs, side = args
-            if side is LEFT:
+            if side == LEFT:
                 rel_ofs = self.glb_min + abs_ofs - base
                 if abs_ofs >= base and abs_ofs <= top:
                     return rel_ofs

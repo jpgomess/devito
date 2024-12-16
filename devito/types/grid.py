@@ -1,11 +1,11 @@
 from abc import ABC
 from collections import namedtuple
-from math import floor
+from functools import cached_property
 
 import numpy as np
 from sympy import prod
-from cached_property import cached_property
 
+from devito import configuration
 from devito.data import LEFT, RIGHT
 from devito.logger import warning
 from devito.mpi import Distributor, MPI
@@ -15,7 +15,8 @@ from devito.types.basic import Scalar
 from devito.types.dense import Function
 from devito.types.utils import DimensionTuple
 from devito.types.dimension import (Dimension, SpaceDimension, TimeDimension,
-                                    Spacing, SteppingDimension, SubDimension)
+                                    Spacing, SteppingDimension, SubDimension,
+                                    MultiSubDimension, DefaultDimension)
 
 __all__ = ['Grid', 'SubDomain', 'SubDomainSet']
 
@@ -68,21 +69,18 @@ class Grid(CartesianDiscretization, ArgProvider):
     ----------
     shape : tuple of ints
         Shape of the computational domain in grid points.
-    extent : tuple of floats, optional
-        Physical extent of the domain in m; defaults to a unit box of extent 1m
-        in all dimensions.
-    origin : tuple of floats, optional
-        Physical coordinate of the origin of the domain; defaults to 0.0 in all
-        dimensions.
+    extent : tuple of floats, default=unit box of extent 1m in all dimensions
+        Physical extent of the domain in m.
+    origin : tuple of floats, default=0.0 in all dimensions
+        Physical coordinate of the origin of the domain.
     dimensions : tuple of SpaceDimension, optional
         The dimensions of the computational domain encapsulated by this Grid.
     time_dimension : TimeDimension, optional
         The dimension used to define time in a `TimeFunction` created from
         this Grid.
-    dtype : data-type, optional
+    dtype : data-type, default=np.float32
         Any object that can be interpreted as a numpy data type, used as default
         data type to be inherited by all Functions created from this Grid.
-        Defaults to ``np.float32``.
     subdomains : tuple of SubDomain, optional
         If no subdomains are specified, the Grid only defines the two default
         subdomains ``interior`` and ``domain``.
@@ -166,15 +164,26 @@ class Grid(CartesianDiscretization, ArgProvider):
 
         # Create a Distributor, used internally to implement domain decomposition
         # by all Functions defined on this Grid
-        self._distributor = Distributor(shape, dimensions, comm, topology)
+        topology = topology or configuration['topology']
+        if topology:
+            if len(topology) == len(self.shape):
+                self._topology = topology
+            else:
+                warning("Ignoring the provided topology `%s` as it "
+                        "is incompatible with the grid shape `%s`" %
+                        (topology, self.shape))
+                self._topology = None
+        else:
+            self._topology = None
+        self._distributor = Distributor(shape, dimensions, comm, self._topology)
 
         # The physical extent
         self._extent = as_tuple(extent or tuple(1. for _ in self.shape))
 
         # Initialize SubDomains
         subdomains = tuple(i for i in (Domain(), Interior(), *as_tuple(subdomains)))
-        for counter, i in enumerate(subdomains):
-            i.__subdomain_finalize__(self, counter=counter)
+        for i in subdomains:
+            i.__subdomain_finalize__(self)
         self._subdomains = subdomains
 
         self._origin = as_tuple(origin or tuple(0. for _ in self.shape))
@@ -302,8 +311,13 @@ class Grid(CartesianDiscretization, ArgProvider):
                 for d, g, l in zip(self.dimensions, self.shape, self.shape_local)}
 
     @property
+    def topology(self):
+        """The topology used for decomposing the CartesianDiscretization."""
+        return self._topology
+
+    @property
     def distributor(self):
-        """The Distributor used for MPI-decomposing the CartesianDiscretization."""
+        """The Distributor used for decomposing the CartesianDiscretization."""
         return self._distributor
 
     @property
@@ -488,7 +502,6 @@ class SubDomain(AbstractSubDomain):
         # Create the SubDomain's SubDimensions
         sub_dimensions = []
         sdshape = []
-        counter = kwargs.get('counter', 0) - 1
         for k, v, s in zip(self.define(grid.dimensions).keys(),
                            self.define(grid.dimensions).values(), grid.shape):
             if isinstance(v, Dimension):
@@ -500,8 +513,7 @@ class SubDomain(AbstractSubDomain):
                     side, thickness_left, thickness_right = v
                     if side != 'middle':
                         raise ValueError("Expected side 'middle', not `%s`" % side)
-                    sub_dimensions.append(SubDimension.middle('i%d%s' %
-                                                              (counter, k.name),
+                    sub_dimensions.append(SubDimension.middle('i%s' % k.name,
                                                               k, thickness_left,
                                                               thickness_right))
                     thickness = s-thickness_left-thickness_right
@@ -512,16 +524,14 @@ class SubDomain(AbstractSubDomain):
                         if s-thickness < 0:
                             raise ValueError("Maximum thickness of dimension %s "
                                              "is %d, not %d" % (k.name, s, thickness))
-                        sub_dimensions.append(SubDimension.left('i%d%s' %
-                                                                (counter, k.name),
+                        sub_dimensions.append(SubDimension.left('i%s' % k.name,
                                                                 k, thickness))
                         sdshape.append(thickness)
                     elif side == 'right':
                         if s-thickness < 0:
                             raise ValueError("Maximum thickness of dimension %s "
                                              "is %d, not %d" % (k.name, s, thickness))
-                        sub_dimensions.append(SubDimension.right('i%d%s' %
-                                                                 (counter, k.name),
+                        sub_dimensions.append(SubDimension.right('i%s' % k.name,
                                                                  k, thickness))
                         sdshape.append(thickness)
                     else:
@@ -541,40 +551,6 @@ class SubDomain(AbstractSubDomain):
         information, refer to ``SubDomain.__doc__``.
         """
         raise NotImplementedError
-
-
-class MultiSubDimension(SubDimension):
-
-    """
-    A special SubDimension for graceful lowering of MultiSubDomains.
-    """
-
-    def __init_finalize__(self, name, parent, msd):
-        # NOTE: a MultiSubDimension stashes a reference to the originating MultiSubDomain.
-        # This creates a circular pattern as the `msd` itself carries references to
-        # its MultiSubDimensions. This is currently necessary because during compilation
-        # we drop the MultiSubDomain early, but when the MultiSubDimensions are processed
-        # we still need it to create the implicit equations. Untangling this is
-        # definitely possible, but not straightforward
-        self.msd = msd
-
-        lst, rst = self._symbolic_thickness(name)
-        left = parent.symbolic_min + lst
-        right = parent.symbolic_max - rst
-
-        super().__init_finalize__(name, parent, left, right, ((lst, 0), (rst, 0)), False)
-
-    def __hash__(self):
-        # There is no possibility for two MultiSubDimensions to ever hash the same, since
-        # a MultiSubDimension carries a reference to a MultiSubDomain, which is unique
-        return id(self)
-
-    @cached_property
-    def bound_symbols(self):
-        # Unlike a SubDimension, a MultiSubDimension does *not* bind its thickness,
-        # which is rather bound by an Operation (which can alter its value
-        # dynamically so as to implement a MultiSubDomain)
-        return self.parent.bound_symbols
 
 
 class MultiSubDomain(AbstractSubDomain):
@@ -721,15 +697,9 @@ class SubDomainSet(MultiSubDomain):
         except AttributeError:
             pass
 
-    def __subdomain_finalize__(self, grid, counter=0, **kwargs):
+    def __subdomain_finalize__(self, grid, **kwargs):
         self._grid = grid
         self._dtype = grid.dtype
-
-        # Create the SubDomainSet SubDimensions
-        self._dimensions = tuple(
-            MultiSubDimension('%si%d' % (d.name, counter), d, self)
-            for d in grid.dimensions
-        )
 
         # Compute the SubDomainSet shapes
         global_bounds = []
@@ -761,34 +731,34 @@ class SubDomainSet(MultiSubDomain):
             self._local_bounds = self._global_bounds
 
         # Sanity check
-        if len(self._local_bounds) != 2*len(self.dimensions):
+        if len(self._local_bounds) != 2*len(grid.dimensions):
             raise ValueError("Left and right bounds must be supplied for each dimension")
 
         # Associate the `_local_bounds` to suitable symbolic objects that the
         # compiler can use to generate code
-        n = counter - npresets
-        assert n >= 0
-        self._implicit_dimension = i_dim = Dimension(name='n%d' % n)
-        functions = []
-        for j in range(len(self._local_bounds)):
-            index = floor(j/2)
-            d = self.dimensions[index]
-            if j % 2 == 0:
-                fname = "%s_%s" % (self.name, d.min_name)
-            else:
-                fname = "%s_%s" % (self.name, d.max_name)
-            f = Function(name=fname, grid=self._grid, shape=(self._n_domains,),
-                         dimensions=(i_dim,), dtype=np.int32)
 
+        # Dimensions with identical names hash the same, hence tag them with the
+        # SubDomainSet ID to make them unique so they can be used to key a dictionary
+        # of replacements without risking overwriting.
+        i_dim = Dimension('n_%s' % str(id(self)))
+        d_dim = DefaultDimension(name='d', default_value=2*grid.dim)
+        sd_func = Function(name=self.name, grid=self._grid,
+                           shape=(self._n_domains, 2*grid.dim),
+                           dimensions=(i_dim, d_dim), dtype=np.int32)
+
+        dimensions = []
+        for i, d in enumerate(grid.dimensions):
             # Check if shorthand notation has been provided:
-            if isinstance(self._local_bounds[j], int):
-                f.data[:] = np.full((self._n_domains,), self._local_bounds[j],
-                                    dtype=np.int32)
-            else:
-                f.data[:] = self._local_bounds[j]
+            for j in range(2):
+                idx = 2*i + j
+                sd_func.data[:, idx] = self._local_bounds[idx]
 
-            functions.append(f)
-        self._functions = as_tuple(functions)
+            dimensions.append(MultiSubDimension(
+                'i%s' % d.name, d, None, functions=sd_func,
+                bounds_indices=(2*i, 2*i+1), implicit_dimension=i_dim
+            ))
+
+        self._dimensions = tuple(dimensions)
 
     @property
     def n_domains(self):

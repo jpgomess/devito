@@ -34,19 +34,14 @@ jobs:
 
     steps:
     - name: Checkout devito
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Setup conda
-      uses: conda-incubator/setup-miniconda@v2
+      uses: conda-incubator/setup-miniconda@v3
       with:
-       python-version: 3.8
        activate-environment: devito
        environment-file: environment-dev.yml
        auto-activate-base: false
-
-    - name: Install dependencies
-      run: |
-        pip install -e .[tests,extras]
 
     - name: Tests in examples
       run: |
@@ -87,7 +82,7 @@ jobs:
         python examples/cfd/example_diffusion.py
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         name: ${{ matrix.name }}

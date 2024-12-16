@@ -2,7 +2,7 @@ from functools import wraps, partial
 from itertools import product
 
 import numpy as np
-from sympy import S, finite_diff_weights, cacheit, sympify
+from sympy import S, finite_diff_weights, cacheit, sympify, Function, Rational
 
 from devito.tools import Tag, as_tuple
 from devito.types.dimension import StencilDimension
@@ -55,20 +55,6 @@ def check_input(func):
     return wrapper
 
 
-def check_symbolic(func):
-    @wraps(func)
-    def wrapper(expr, *args, **kwargs):
-        if expr._uses_symbolic_coefficients:
-            expr_dict = expr.as_coefficients_dict()
-            if any(v > 1 for k, v in expr_dict.items()):
-                raise NotImplementedError("Applying the chain rule to functions "
-                                          "with symbolic coefficients is not currently "
-                                          "supported")
-        kwargs['symbolic'] = expr._uses_symbolic_coefficients
-        return func(expr, *args, **kwargs)
-    return wrapper
-
-
 def dim_with_order(dims, orders):
     """
     Create all possible derivative order for each dims
@@ -100,8 +86,14 @@ def generate_fd_shortcuts(dims, so, to=0):
     from devito.finite_differences.derivative import Derivative
 
     def diff_f(expr, deriv_order, dims, fd_order, side=None, **kwargs):
-        return Derivative(expr, *as_tuple(dims), deriv_order=deriv_order,
-                          fd_order=fd_order, side=side, **kwargs)
+        # Separate dimensions to always have cross derivatives return nested
+        # derivatives. E.g `u.dxdy -> u.dx.dy`
+        dims = as_tuple(dims)
+        deriv_order = as_tuple(deriv_order)
+        fd_order = as_tuple(fd_order)
+        for (d, do, fo) in zip(dims, deriv_order, fd_order):
+            expr = Derivative(expr, d, deriv_order=do, fd_order=fo, side=side, **kwargs)
+        return expr
 
     all_combs = dim_with_order(dims, orders)
 
@@ -136,6 +128,15 @@ def generate_fd_shortcuts(dims, so, to=0):
         name_fd = 'd%sr' % name
         desciption = 'right first order derivative w.r.t dimension %s' % d.name
         derivatives[name_fd] = (deriv, desciption)
+
+    # Add RSFD for first order derivatives
+    for d, o in zip(dims, orders):
+        if not d.is_Time:
+            name = d.root.name
+            deriv = partial(diff_f, deriv_order=1, dims=d, fd_order=o, method='RSFD')
+            name_fd = 'd%s45' % name
+            desciption = 'Derivative w.r.t %s with rotated 45 degree FD' % d.name
+            derivatives[name_fd] = (deriv, desciption)
 
     return derivatives
 
@@ -222,20 +223,20 @@ def make_stencil_dimension(expr, _min, _max):
     Create a StencilDimension for `expr` with unique name.
     """
     n = len(expr.find(StencilDimension))
-    return StencilDimension(name='i%d' % n, _min=_min, _max=_max)
-
-
-def symbolic_weights(function, deriv_order, indices, dim):
-    return [function._coeff_symbol(indices[j], deriv_order, function, dim)
-            for j in range(0, len(indices))]
+    return StencilDimension('i%d' % n, _min, _max)
 
 
 @cacheit
-def numeric_weights(deriv_order, indices, x0):
+def numeric_weights(function, deriv_order, indices, x0):
     return finite_diff_weights(deriv_order, indices, x0)[-1][-1]
 
 
-def generate_indices(expr, dim, order, side=None, matvec=None, x0=None):
+fd_weights_registry = {'taylor': numeric_weights, 'standard': numeric_weights,
+                       'symbolic': numeric_weights}  # Backward compat for 'symbolic'
+coeff_priority = {'taylor': 1, 'standard': 1}
+
+
+def generate_indices(expr, dim, order, side=None, matvec=None, x0=None, nweights=0):
     """
     Indices for the finite-difference scheme.
 
@@ -259,115 +260,44 @@ def generate_indices(expr, dim, order, side=None, matvec=None, x0=None):
     -------
     An IndexSet, representing an ordered list of indices.
     """
-    if expr.is_Staggered and not dim.is_Time:
-        x0, indices = generate_indices_staggered(expr, dim, order, side=side, x0=x0)
-    else:
-        x0 = (x0 or {dim: dim}).get(dim, dim)
-        # Check if called from first_derivative()
-        indices = generate_indices_cartesian(expr, dim, order, side, x0)
+    # Evaluation point
+    x0 = sympify(((x0 or {}).get(dim) or expr.indices_ref[dim]))
 
-    assert isinstance(indices, IndexSet)
+    # If provided a pure number, assume it's a valid index
+    if x0.is_Number:
+        d = make_stencil_dimension(expr, -order//2, order//2)
+        iexpr = x0 + d * dim.spacing
+        return IndexSet(dim, expr=iexpr), x0
 
-    return indices, x0
+    # Evaluation point relative to the expression's grid
+    mid = (x0 - expr.indices_ref[dim]).subs({dim: 0, dim.spacing: 1})
 
+    # Shift for side
+    side = side or centered
 
-def generate_indices_cartesian(expr, dim, order, side, x0):
-    """
-    Indices for the finite-difference scheme on a cartesian grid.
-
-    Parameters
-    ----------
-    expr : expr-like
-        Expression that is differentiated.
-    dim : Dimension
-        Dimensions w.r.t which the derivative is taken.
-    order : int
-        Order of the finite-difference scheme.
-    side : Side
-        Side of the scheme (centered, left, right).
-    x0 : dict of {Dimension: Dimension or expr-like or Number}
-        Origin of the scheme, ie. `x`, `x + .5 * x.spacing`, ...
-
-    Returns
-    -------
-    An IndexSet, representing an ordered list of indices.
-    """
-    shift = 0
-    # Shift if `x0` is not on the grid
-    offset_c = 0 if sympify(x0).is_Integer else (dim - x0)/dim.spacing
-    offset_c = np.sign(offset_c) * (offset_c % 1)
-    offset = offset_c * dim.spacing
-    # Spacing
-    diff = dim.spacing
-    if side in [left, right]:
-        shift = 1
-        diff *= side.val
-    # Indices
-    if order < 2:
-        indices = [x0, x0 + diff] if offset == 0 else [x0 - offset, x0 + offset]
-        return IndexSet(dim, indices)
-    else:
-        # Left and right max offsets for indices
-        o_min = -order//2 + int(np.ceil(-offset_c))
-        o_max = order//2 - int(np.ceil(offset_c))
-
-        d = make_stencil_dimension(expr, o_min, o_max)
-        iexpr = x0 + (d + shift) * diff + offset
-        return IndexSet(dim, expr=iexpr)
-
-
-def generate_indices_staggered(expr, dim, order, side=None, x0=None):
-    """
-    Indices for the finite-difference scheme on a staggered grid.
-
-    Parameters
-    ----------
-    expr : expr-like
-        Expression that is differentiated.
-    dim : Dimension
-        Dimensions w.r.t which the derivative is taken.
-    order : int
-        Order of the finite-difference scheme.
-    side : Side, optional
-        Side of the scheme (centered, left, right).
-    x0 : dict of {Dimension: Dimension or expr-like or Number}, optional
-        Origin of the scheme, ie. `x`, `x + .5 * x.spacing`, ...
-
-    Returns
-    -------
-    An IndexSet, representing an ordered list of indices.
-    """
-    diff = dim.spacing
-    start = (x0 or {}).get(dim) or expr.indices_ref[dim]
-    try:
-        ind0 = expr.indices_ref[dim]
-    except AttributeError:
-        ind0 = start
-
-    if start != ind0:
-        if order < 2:
-            indices = [start - diff/2, start + diff/2]
-            indices = IndexSet(dim, indices)
+    # Indices range
+    o_min = int(np.ceil(mid - order/2)) + side.val
+    o_max = int(np.floor(mid + order/2)) + side.val
+    if o_max == o_min:
+        if dim.is_Time or not expr.is_Staggered:
+            o_max += 1
         else:
-            o_min = -order//2+1
-            o_max = order//2
+            o_min -= 1
 
-            d = make_stencil_dimension(expr, o_min, o_max)
-            iexpr = start - diff/2 + d * diff
-            indices = IndexSet(dim, expr=iexpr)
-    else:
-        if order < 2:
-            indices = [start, start - diff]
-            indices = IndexSet(dim, indices)
+    if nweights > 0 and (o_max - o_min + 1) != nweights:
+        # We cannot infer how the stencil should be centered
+        # if nweights is more than one extra point.
+        assert nweights == (o_max - o_min + 1) + 1
+        # In the "one extra" case  we need to pad with one point to symmetrize
+        if (o_max - mid) > (mid - o_min):
+            o_min -= 1
         else:
-            o_min = -order//2
-            o_max = order//2
+            o_max += 1
+    # StencilDimension and expression
+    d = make_stencil_dimension(expr, o_min, o_max)
+    iexpr = expr.indices_ref[dim] + d * dim.spacing
 
-            d = make_stencil_dimension(expr, o_min, o_max)
-            iexpr = start + d * diff
-            indices = IndexSet(dim, expr=iexpr)
-
-    return start, indices
+    return IndexSet(dim, expr=iexpr), x0
 
 
 def make_shift_x0(shift, ndim):
@@ -378,8 +308,8 @@ def make_shift_x0(shift, ndim):
     """
     if shift is None:
         return lambda s, d, i, j: None
-    elif isinstance(shift, float):
-        return lambda s, d, i, j: d + s * d.spacing
+    elif sympify(shift).is_Number:
+        return lambda s, d, i, j: d + Rational(s) * d.spacing
     elif type(shift) is tuple and np.shape(shift) == ndim:
         if len(ndim) == 1:
             return lambda s, d, i, j: d + s[j] * d.spacing
@@ -389,3 +319,18 @@ def make_shift_x0(shift, ndim):
             raise ValueError("ndim length must be equal to 1 or 2")
     raise ValueError("shift parameter must be one of the following options: "
                      "None, float or tuple with shape equal to %s" % (ndim,))
+
+
+def process_weights(weights, expr):
+    if weights is None:
+        return 0, None
+    elif isinstance(weights, Function):
+        if len(weights.dimensions) == 1:
+            return weights.shape[0], weights.dimensions[0]
+        wdim = {d for d in weights.dimensions if d not in expr.dimensions}
+        assert len(wdim) == 1
+        wdim = wdim.pop()
+        shape = weights.shape
+        return shape[weights.dimensions.index(wdim)], wdim
+    else:
+        return len(list(weights)), None

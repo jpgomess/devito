@@ -4,14 +4,14 @@ from math import floor
 
 from sympy import sin, tan
 
-from conftest import opts_tiling, assert_structure, skipif
+from conftest import opts_tiling, assert_structure
 from devito import (ConditionalDimension, Constant, Grid, Function, TimeFunction,
-                    Eq, solve, Operator, SubDomain, SubDomainSet)
-from devito.ir import FindNodes, Expression, Iteration
+                    Eq, solve, Operator, SubDomain, SubDomainSet, Lt)
+from devito.ir import FindNodes, FindSymbols, Expression, Iteration, SymbolRegistry
 from devito.tools import timed_region
 
 
-class TestSubdomains(object):
+class TestSubdomains:
     """
     Class for testing SubDomains
     """
@@ -35,8 +35,10 @@ class TestSubdomains(object):
 
         eq0 = Eq(f, x*f+y, subdomain=grid.subdomains['d0'])
         with timed_region('x'):
-            expr = Operator._lower_exprs([eq0], options={})[0]
-        assert expr.rhs == x1 * f[x1 + 1, y1 + 1] + y1
+            # _lower_exprs expects a SymbolRegistry, so create one
+            expr = Operator._lower_exprs([eq0], options={},
+                                         sregistry=SymbolRegistry())[0]
+        assert str(expr.rhs) == 'ix*f[ix + 1, iy + 1] + iy'
 
     def test_multiple_middle(self):
         """
@@ -168,7 +170,7 @@ class TestSubdomains(object):
 
     @pytest.mark.parametrize('spec', sd_specs)
     @pytest.mark.parallel(mode=[2, 3])
-    def test_subdomains_mpi(self, spec):
+    def test_subdomains_mpi(self, spec, mode):
 
         class sd0(SubDomain):
             name = 'd0'
@@ -195,7 +197,7 @@ class TestSubdomains(object):
         check = np.zeros(grid.shape)
 
         mM_map = {x.symbolic_min: 0, x.symbolic_max: grid.shape[0]-1}
-        t_map = {k: v for k, v in xd0._thickness_map.items() if v is not None}
+        t_map = {tkn: tkn.value for tkn in xd0.thickness if tkn.value is not None}
         start = int(xd0.symbolic_min.subs({**mM_map, **t_map}))
         stop = int(xd0.symbolic_max.subs({**mM_map, **t_map})+1)
 
@@ -204,7 +206,7 @@ class TestSubdomains(object):
         assert np.all(check[grid.distributor.glb_slices[x]] == f.data)
 
 
-class TestMultiSubDomain(object):
+class TestMultiSubDomain:
 
     @pytest.mark.parametrize('opt', opts_tiling)
     def test_iterate_NDomains(self, opt):
@@ -305,7 +307,37 @@ class TestMultiSubDomain(object):
         # unique -- see issue #1474
         exprs = FindNodes(Expression).visit(op)
         reads = set().union(*[e.reads for e in exprs])
-        assert len(reads) == 7  # f, g, h, xi_n_m, xi_n_M, yi_n_m, yi_n_M
+        assert len(reads) == 4  # f, g, h, mydomains
+
+    def test_multi_eq_split(self):
+        """
+        Test cases where two loops over the same SubDomainSet will be
+        separated by another loop.
+        """
+        # Note: a bug was found where this would cause SubDomainSet
+        # bounds expressions not to be generated in the second loop over
+        # the SubDomainSet
+        class MSD(SubDomainSet):
+            name = 'msd'
+
+        msd = MSD(N=1, bounds=(1, 1, 1, 1))
+
+        grid = Grid(shape=(11, 11), subdomains=(msd,))
+
+        f = Function(name='f', grid=grid)
+        g = Function(name='g', grid=grid)
+
+        eq0 = Eq(f, 1, subdomain=msd)
+        eq1 = Eq(f, g)  # Dependency needed to fix equation order
+        eq2 = Eq(g, 1, subdomain=msd)
+
+        op = Operator([eq0, eq1, eq2])
+
+        # Ensure the loop structure is correct
+        # Note the two 'n0' correspond to the thickness definitions
+        assert_structure(op,
+                         ['n0', 'n0xy', 'xy', 'n0', 'n0xy'],
+                         'n0xyxyn0xy')
 
     def test_multi_sets(self):
         """
@@ -361,9 +393,8 @@ class TestMultiSubDomain(object):
 
         assert((np.array(f.data[:]+g.data[:]) == expected).all())
 
-    @skipif(['nompi'])
     @pytest.mark.parallel(mode=[(4, 'basic'), (4, 'overlap')])
-    def test_subdomainset_mpi(self):
+    def test_subdomainset_mpi(self, mode):
 
         n_domains = 5
 
@@ -489,7 +520,7 @@ class TestMultiSubDomain(object):
         # Make sure it jit-compiles
         op.cfunction
 
-        assert_structure(op, ['x,y', 't,n0', 't,n0,xi2,yi2'], 'x,y,t,n0,xi2,yi2')
+        assert_structure(op, ['x,y', 't,n0', 't,n0,x,y'], 'x,y,t,n0,x,y')
 
     def test_issue_1761_b(self):
         """
@@ -528,8 +559,8 @@ class TestMultiSubDomain(object):
         op.cfunction
 
         assert_structure(op,
-                         ['x,y', 't,n0', 't,n0,xi2,yi2', 't,n1', 't,n1,xi3,yi3'],
-                         'x,y,t,n0,xi2,yi2,n1,xi3,yi3')
+                         ['x,y', 't,n0', 't,n0,x,y', 't,n1', 't,n1,x,y'],
+                         'x,y,t,n0,x,y,n1,x,y')
 
     def test_issue_1761_c(self):
         """
@@ -564,9 +595,9 @@ class TestMultiSubDomain(object):
         # Make sure it jit-compiles
         op.cfunction
 
-        assert_structure(op, ['x,y', 't,n0', 't,n0,xi2,yi2',
-                              't,n1', 't,n1,xi3,yi3', 't,n0', 't,n0,xi2,yi2'],
-                         'x,y,t,n0,xi2,yi2,n1,xi3,yi3,n0,xi2,yi2')
+        assert_structure(op, ['x,y', 't,n0', 't,n0,x,y',
+                              't,n1', 't,n1,x,y', 't,n0', 't,n0,x,y'],
+                         'x,y,t,n0,x,y,n1,x,y,n0,x,y')
 
     def test_issue_1761_d(self):
         """
@@ -591,8 +622,8 @@ class TestMultiSubDomain(object):
         # Make sure it jit-compiles
         op.cfunction
 
-        assert_structure(op, ['t,n0', 't,n0,xi2,yi2', 't,n0,xi2,yi2'],
-                         't,n0,xi2,yi2,xi2,yi2')
+        assert_structure(op, ['t,n0', 't,n0,x,y', 't,n0,x,y'],
+                         't,n0,x,y,x,y')
 
     def test_guarding(self):
 
@@ -619,8 +650,8 @@ class TestMultiSubDomain(object):
         # Make sure it jit-compiles
         op.cfunction
 
-        assert_structure(op, ['t', 't,n0', 't,n0,xi2,yi2', 't,n0', 't,n0,xi2,yi2'],
-                         't,n0,xi2,yi2,n0,xi2,yi2')
+        assert_structure(op, ['t', 't,n0', 't,n0,x,y', 't,n0', 't,n0,x,y'],
+                         't,n0,x,y,n0,x,y')
 
     def test_3D(self):
 
@@ -640,8 +671,21 @@ class TestMultiSubDomain(object):
         # Make sure it jit-compiles
         op.cfunction
 
-        assert_structure(op, ['t,n0', 't,n0,xi20_blk0,yi20_blk0,xi2,yi2,zi2'],
-                         't,n0,xi20_blk0,yi20_blk0,xi2,yi2,zi2')
+        assert_structure(op, ['t,n0', 't,n0,ix0_blk0,iy0_blk0,x,y,z'],
+                         't,n0,ix0_blk0,iy0_blk0,x,y,z')
+
+        # Drag a rebuilt MultiSubDimension out of the operator
+        dims = {d.name: d for d in FindSymbols('dimensions').visit(op)}
+        xi = [d for d in dims['x']._defines if d.is_MultiSub]
+        assert len(xi) == 1  # Sanity check
+        xi = xi.pop()
+        # Check that the correct number of thickness expressions are generated
+        sdsexprs = [i.expr for i in FindNodes(Expression).visit(op)
+                    if i.expr.rhs.is_Indexed
+                    and i.expr.rhs.function is xi.functions]
+        # The thickness expressions Eq(x_ltkn0, dummy[n0][0]), ...
+        # should be scheduled once per dimension
+        assert len(sdsexprs) == 6
 
     def test_sequential_implicit(self):
         """
@@ -671,3 +715,163 @@ class TestMultiSubDomain(object):
         assert x.is_Parallel
         assert y.is_Parallel
         assert z.is_Parallel
+
+
+class TestSubDomain_w_condition:
+
+    def test_condition_w_subdomain_v0(self):
+
+        shape = (10, )
+        grid = Grid(shape=shape)
+        x, = grid.dimensions
+
+        class Middle(SubDomain):
+            name = 'middle'
+
+            def define(self, dimensions):
+                return {x: ('middle', 2, 4)}
+
+        mid = Middle()
+        my_grid = Grid(shape=shape, subdomains=(mid, ))
+
+        f = Function(name='f', grid=my_grid)
+
+        sdf = Function(name='sdf', grid=my_grid)
+        sdf.data[5:] = 1
+
+        condition = Lt(sdf[mid.dimensions[0]], 1)
+
+        ci = ConditionalDimension(name='ci', condition=condition,
+                                  parent=mid.dimensions[0])
+
+        op = Operator(Eq(f, f + 10, implicit_dims=ci,
+                      subdomain=my_grid.subdomains['middle']))
+        op.apply()
+
+        assert_structure(op, ['x'], 'x')
+
+    def test_condition_w_subdomain_v1(self):
+
+        shape = (10, 10)
+        grid = Grid(shape=shape)
+        x, y = grid.dimensions
+
+        class Middle(SubDomain):
+            name = 'middle'
+
+            def define(self, dimensions):
+                return {x: x, y: ('middle', 2, 4)}
+
+        mid = Middle()
+        my_grid = Grid(shape=shape, subdomains=(mid, ))
+
+        sdf = Function(name='sdf', grid=grid)
+        sdf.data[:, 5:] = 1
+        sdf.data[2:6, 3:5] = 1
+
+        x1, y1 = mid.dimensions
+
+        condition = Lt(sdf[x1, y1], 1)
+        ci = ConditionalDimension(name='ci', condition=condition, parent=y1)
+
+        f = Function(name='f', grid=my_grid)
+        op = Operator(Eq(f, f + 10, implicit_dims=ci,
+                      subdomain=my_grid.subdomains['middle']))
+
+        op.apply()
+
+        assert_structure(op, ['xy'], 'xy')
+
+    def test_condition_w_subdomain_v2(self):
+
+        shape = (10, 10)
+        grid = Grid(shape=shape)
+        x, y = grid.dimensions
+
+        class Middle(SubDomain):
+            name = 'middle'
+
+            def define(self, dimensions):
+                return {x: ('middle', 2, 4), y: ('middle', 2, 4)}
+
+        mid = Middle()
+        my_grid = Grid(shape=shape, subdomains=(mid, ))
+
+        sdf = Function(name='sdf', grid=my_grid)
+        sdf.data[2:4, 5:] = 1
+        sdf.data[2:6, 3:5] = 1
+
+        x1, y1 = mid.dimensions
+
+        condition = Lt(sdf[x1, y1], 1)
+        ci = ConditionalDimension(name='ci', condition=condition, parent=y1)
+
+        f = Function(name='f', grid=my_grid)
+        op = Operator(Eq(f, f + 10, implicit_dims=ci,
+                      subdomain=my_grid.subdomains['middle']))
+
+        op.apply()
+
+        assert_structure(op, ['xy'], 'xy')
+
+
+class TestRenaming:
+    """
+    Class for testing renaming of SubDimensions and MultiSubDimensions
+    during compilation.
+    """
+
+    def test_subdimension_name_determinism(self):
+        """
+        Ensure that names allocated during compilation are deterministic in their
+        ordering.
+        """
+        # Create two subdomains, two multisubdomains, then interleave them
+        # across multiple equations
+
+        class SD0(SubDomain):
+            name = 'sd'
+
+            def define(self, dimensions):
+                x, y = dimensions
+                return {x: x, y: ('right', 2)}
+
+        class SD1(SubDomain):
+            name = 'sd'
+
+            def define(self, dimensions):
+                x, y = dimensions
+                return {x: ('middle', 1, 2), y: ('left', 2)}
+
+        class MSD0(SubDomainSet):
+            name = 'msd'
+
+        class MSD1(SubDomainSet):
+            name = 'msd'
+
+        sd0 = SD0()
+        sd1 = SD1()
+        msd0 = MSD0(N=1, bounds=(1, 1, 1, 1))
+        msd1 = MSD1(N=1, bounds=(1, 1, 1, 1))
+
+        grid = Grid(shape=(11, 11), subdomains=(sd1, sd0, msd1, msd0))
+
+        f = Function(name='f', grid=grid)
+        g = Function(name='g', grid=grid)
+        h = Function(name='h', grid=grid)
+
+        eq0 = Eq(f, 1, subdomain=sd0)
+        eq1 = Eq(g, f+1, subdomain=msd0)
+        eq2 = Eq(h, f+g, subdomain=sd0)
+        eq3 = Eq(g, h, subdomain=sd1)
+        eq4 = Eq(f, f+1, subdomain=sd1)
+        eq5 = Eq(f, h+1, subdomain=msd1)
+        eq6 = Eq(f, g+1, subdomain=sd0)
+        eq7 = Eq(g, 1, subdomain=msd1)
+        eq8 = Eq(g, 1, subdomain=msd0)
+
+        op = Operator([eq0, eq1, eq2, eq3, eq4, eq5, eq6, eq7, eq8])
+        assert_structure(op, ['xy', 'n0', 'n0xy', 'xy', 'xy',
+                              'n1', 'n1xy', 'xy', 'n1', 'n1xy',
+                              'n0', 'n0xy'],
+                         'xyn0xyxyxyn1xyxyn1xyn0xy')

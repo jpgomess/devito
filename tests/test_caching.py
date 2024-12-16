@@ -11,6 +11,7 @@ from devito import (Grid, Function, TimeFunction, SparseFunction, SparseTimeFunc
                     TensorFunction, TensorTimeFunction, VectorTimeFunction)
 from devito.types import (DeviceID, NThreadsBase, NPThreads, Object, LocalObject,
                           Scalar, Symbol, ThreadID)
+from devito.types.basic import AbstractSymbol
 
 
 @pytest.fixture
@@ -38,11 +39,21 @@ def operate_on_empty_cache():
     _SymbolCache.update(old_cache)
 
 
-class TestHashing(object):
+class TestHashing:
 
     """
     Test hashing of symbolic objects.
     """
+
+    def test_abstractsymbol(self):
+        """Test that different Symbols have different hash values."""
+        s0 = AbstractSymbol('s')
+        s1 = AbstractSymbol('s')
+        assert s0 is not s1
+        assert hash(s0) == hash(s1)
+
+        s2 = AbstractSymbol('s', nonnegative=True)
+        assert hash(s0) != hash(s2)
 
     def test_constant(self):
         """Test that different Constants have different hash value."""
@@ -223,7 +234,7 @@ class TestHashing(object):
         assert hash(foo3) != hash(foo1)
 
 
-class TestCaching(object):
+class TestCaching:
 
     """
     Test the symbol cache infrastructure.
@@ -652,8 +663,8 @@ class TestCaching(object):
         i = u.inject(expr=u, field=u)
 
         # created: rux, ruy (radius dimensions) and spacings
-        # posx, posy, px, py, u_coords (as indexified),
-        ncreated = 2+1+2+2+2+1
+        # posx, posy, px, py, u_coords (as indexified), x_m, x_M, y_m, y_M
+        ncreated = 2+1+2+2+2+1+4
         # Note that injection is now lazy so no new symbols should be created
         assert len(_SymbolCache) == cur_cache_size
         i.evaluate
@@ -673,14 +684,21 @@ class TestCaching(object):
         # in the first clear_cache they were still referenced by their "parent" objects
         # (e.g., ru* by ConditionalDimensions, through `condition`)
 
-        assert len(_SymbolCache) == init_cache_size + 8
+        assert len(_SymbolCache) == init_cache_size + 12
         clear_cache()
         # Now we should be back to the original state except for
-        # pos* that belong to the abstract class
-        assert len(_SymbolCache) == init_cache_size + 2
+        # pos* that belong to the abstract class and the dimension
+        # bounds (x_m, x_M, y_m, y_M)
+        assert len(_SymbolCache) == init_cache_size + 6
         clear_cache()
-        # Now we should be back to the original state
-        assert len(_SymbolCache) == init_cache_size
+        # Now we should be back to the original state plus the dimension bounds
+        # (x_m, x_M, y_m, y_M)
+        assert len(_SymbolCache) == init_cache_size + 4
+        # Delete the grid and check that all symbols are subsequently garbage collected
+        del grid
+        for n in (10, 3, 0):
+            clear_cache()
+            assert len(_SymbolCache) == n
 
     def test_after_indexification(self):
         """
@@ -753,7 +771,7 @@ class TestCaching(object):
         assert np.all(np.allclose(s.data, 6.) for s in u0)
 
 
-class TestMemoryLeaks(object):
+class TestMemoryLeaks:
 
     """
     Tests ensuring there are no memory leaks.
@@ -831,9 +849,9 @@ class TestMemoryLeaks(object):
         # created by the finite difference (u.dt, u.dx2). We would have had
         # three extra references to u(t + dt), u(x - h_x) and u(x + h_x).
         # But this is not the case anymore!
-        assert len(_SymbolCache) == 11
-        clear_cache()
         assert len(_SymbolCache) == 8
+        clear_cache()
+        assert len(_SymbolCache) == 4
         clear_cache()
         assert len(_SymbolCache) == 2
         clear_cache()

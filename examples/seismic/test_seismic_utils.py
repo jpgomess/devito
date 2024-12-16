@@ -1,4 +1,7 @@
-import pytest
+try:
+    import pytest
+except:
+    pass
 import numpy as np
 
 from devito import norm
@@ -94,3 +97,12 @@ def test_geom(shape):
 
     assert geometry.new_rec(name="bonjour").name == "bonjour"
     assert geometry.new_src(name="bonjour").name == "bonjour"
+
+    src1 = geometry.src
+    src2 = geometry.src
+    assert src1.coordinates is not src2.coordinates
+    assert src1._sparse_dim is src2._sparse_dim
+
+    src3 = geometry.new_src(name="src3", coordinates=src1.coordinates)
+    assert src1.coordinates is src3.coordinates
+    assert src1._sparse_dim is src3._sparse_dim

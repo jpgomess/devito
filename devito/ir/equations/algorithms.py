@@ -1,13 +1,18 @@
 from collections.abc import Iterable
+from functools import singledispatch
 
-from sympy import sympify
-
-from devito.symbolics import retrieve_indexed, uxreplace, retrieve_dimensions
+from devito.symbolics import (retrieve_indexed, uxreplace, retrieve_dimensions,
+                              retrieve_functions)
 from devito.tools import Ordering, as_tuple, flatten, filter_sorted, filter_ordered
-from devito.types import Dimension, IgnoreDimSort
+from devito.types import (Dimension, Eq, IgnoreDimSort, SubDimension,
+                          ConditionalDimension)
+from devito.types.array import Array
 from devito.types.basic import AbstractFunction
+from devito.types.dimension import MultiSubDimension, Thickness
+from devito.data.allocators import DataReference
+from devito.logger import warning
 
-__all__ = ['dimension_sort', 'lower_exprs']
+__all__ = ['dimension_sort', 'lower_exprs', 'concretize_subdims']
 
 
 def dimension_sort(expr):
@@ -89,7 +94,7 @@ def dimension_sort(expr):
     return ordering
 
 
-def lower_exprs(expressions, **kwargs):
+def lower_exprs(expressions, subs=None, **kwargs):
     """
     Lowering an expression consists of the following passes:
 
@@ -101,9 +106,10 @@ def lower_exprs(expressions, **kwargs):
     --------
     f(x - 2*h_x, y) -> f[xi + 2, yi + 4]  (assuming halo_size=4)
     """
-    # Normalize subs
-    subs = {k: sympify(v) for k, v in kwargs.get('subs', {}).items()}
+    return _lower_exprs(expressions, subs or {})
 
+
+def _lower_exprs(expressions, subs):
     processed = []
     for expr in as_tuple(expressions):
         try:
@@ -113,7 +119,7 @@ def lower_exprs(expressions, **kwargs):
             dimension_map = {}
 
         # Handle Functions (typical case)
-        mapper = {f: lower_exprs(f.indexify(subs=dimension_map), **kwargs)
+        mapper = {f: _lower_exprs(f.indexify(subs=dimension_map), subs)
                   for f in expr.find(AbstractFunction)}
 
         # Handle Indexeds (from index notation)
@@ -121,7 +127,7 @@ def lower_exprs(expressions, **kwargs):
             f = i.function
 
             # Introduce shifting to align with the computational domain
-            indices = [(lower_exprs(a) + o) for a, o in
+            indices = [_lower_exprs(a, subs) + o for a, o in
                        zip(i.indices, f._size_nodomain.left)]
 
             # Substitute spacing (spacing only used in own dimension)
@@ -132,8 +138,13 @@ def lower_exprs(expressions, **kwargs):
             if dimension_map:
                 indices = [j.xreplace(dimension_map) for j in indices]
 
-            mapper[i] = f.indexed[indices]
+            # Handle Array
+            if isinstance(f, Array) and f.initvalue is not None:
+                initvalue = [_lower_exprs(i, subs) for i in f.initvalue]
+                # TODO: fix rebuild to avoid new name
+                f = f._rebuild(name='%si' % f.name, initvalue=initvalue)
 
+            mapper[i] = f.indexed[indices]
         # Add dimensions map to the mapper in case dimensions are used
         # as an expression, i.e. Eq(u, x, subdomain=xleft)
         mapper.update(dimension_map)
@@ -147,3 +158,154 @@ def lower_exprs(expressions, **kwargs):
     else:
         assert len(processed) == 1
         return processed.pop()
+
+
+def concretize_subdims(exprs, **kwargs):
+    """
+    Given a list of expressions, return a new list where all user-defined
+    SubDimensions have been replaced by their concrete counterparts.
+
+    A concrete SubDimension binds objects that are guaranteed to be unique
+    across `exprs`, such as the thickness symbols.
+    """
+    sregistry = kwargs.get('sregistry')
+
+    mapper = {}
+    rebuilt = {}  # Rebuilt implicit dims etc which are shared between dimensions
+
+    _concretize_subdims(exprs, mapper, rebuilt, sregistry)
+    if not mapper:
+        return exprs
+
+    # There may be indexed Arrays defined on SubDimensions in the expressions
+    # These must have their dimensions replaced and their .function attribute
+    # reset to prevent recovery of the original SubDimensions
+    functions = {f for f in retrieve_functions(exprs) if f.is_Array}
+    for f in functions:
+        dimensions = tuple(mapper.get(d, d) for d in f.dimensions)
+        if dimensions != f.dimensions:
+            # A dimension has been rebuilt, so build a mapper for Indexed
+            mapper[f.indexed] = f._rebuild(dimensions=dimensions).indexed
+
+    processed = [uxreplace(e, mapper) for e in exprs]
+
+    return processed
+
+
+@singledispatch
+def _concretize_subdims(a, mapper, rebuilt, sregistry):
+    pass
+
+
+@_concretize_subdims.register(list)
+@_concretize_subdims.register(tuple)
+def _(v, mapper, rebuilt, sregistry):
+    for i in v:
+        _concretize_subdims(i, mapper, rebuilt, sregistry)
+
+
+@_concretize_subdims.register(Eq)
+def _(expr, mapper, rebuilt, sregistry):
+    for d in expr.free_symbols:
+        _concretize_subdims(d, mapper, rebuilt, sregistry)
+
+    # Subdimensions can be hiding in implicit dims
+    _concretize_subdims(expr.implicit_dims, mapper, rebuilt, sregistry)
+
+
+@_concretize_subdims.register(Thickness)
+def _(tkn, mapper, rebuilt, sregistry):
+    if tkn in mapper:
+        # Already have a substitution for this thickness
+        return
+
+    mapper[tkn] = tkn._rebuild(name=sregistry.make_name(prefix=tkn.name))
+
+
+@_concretize_subdims.register(SubDimension)
+def _(d, mapper, rebuilt, sregistry):
+    if d in mapper:
+        # Already have a substitution for this dimension
+        return
+
+    tkns = tuple(t._rebuild(name=sregistry.make_name(prefix=t.name)) for t in d.tkns)
+    mapper.update({tkn0: tkn1 for tkn0, tkn1 in zip(d.tkns, tkns)})
+    mapper[d] = d._rebuild(thickness=tkns)
+
+
+@_concretize_subdims.register(ConditionalDimension)
+def _(d, mapper, rebuilt, sregistry):
+    if d in mapper:
+        # Already have a substitution for this dimension
+        return
+
+    _concretize_subdims(d.parent, mapper, rebuilt, sregistry)
+
+    kwargs = {}
+
+    # Parent may be a subdimension
+    if d.parent in mapper:
+        kwargs['parent'] = mapper[d.parent]
+
+    # Condition may contain subdimensions
+    if d.condition is not None:
+        for v in d.condition.free_symbols:
+            _concretize_subdims(v, mapper, rebuilt, sregistry)
+
+        if any(v in mapper for v in d.condition.free_symbols):
+            # Substitute into condition
+            kwargs['condition'] = d.condition.subs(mapper)
+
+    if kwargs:
+        # Rebuild if parent or condition need replacing
+        mapper[d] = d._rebuild(**kwargs)
+
+
+@_concretize_subdims.register(MultiSubDimension)
+def _(d, mapper, rebuilt, sregistry):
+    if d in mapper:
+        # Already have a substitution for this dimension
+        return
+
+    tkns = tuple(tkn._rebuild(name=sregistry.make_name(prefix=tkn.name))
+                 for tkn in d.thickness)
+    kwargs = {'thickness': tkns}
+    fkwargs = {}
+
+    idim0 = d.implicit_dimension
+    if idim0 is not None:
+        if idim0 in rebuilt:
+            idim1 = rebuilt[idim0]
+        else:
+            iname = sregistry.make_name(prefix='n')
+            rebuilt[idim0] = idim1 = idim0._rebuild(name=iname)
+
+        kwargs['implicit_dimension'] = idim1
+        fkwargs['dimensions'] = (idim1,) + d.functions.dimensions[1:]
+
+    if d.functions in rebuilt:
+        functions = rebuilt[d.functions]
+    else:
+        # Increment every instance of this name after the first encountered
+        fname = sregistry.make_name(prefix=d.functions.name, increment_first=False)
+        # Warn the user if name has been changed, since this will affect overrides
+        if fname != d.functions.name:
+            fkwargs['name'] = fname
+            warning("%s <%s> renamed as '%s'. Consider assigning a unique name to %s." %
+                    (str(d.functions), id(d.functions), fname, d.functions.name))
+
+        fkwargs.update({'function': None,
+                        'halo': None,
+                        'padding': None})
+
+        # Data in MultiSubDimension function may not have been touched at this point,
+        # in which case do not use an allocator, as there is nothing to allocate, and
+        # doing so will petrify the `_data` attribute as None.
+        if d.functions._data is not None:
+            fkwargs.update({'allocator': DataReference(d.functions._data)})
+
+        rebuilt[d.functions] = functions = d.functions._rebuild(**fkwargs)
+
+    kwargs['functions'] = functions
+
+    mapper[d] = d._rebuild(**kwargs)

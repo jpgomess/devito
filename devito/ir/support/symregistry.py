@@ -5,7 +5,7 @@ from devito.types import (DeviceID, NThreads, NThreadsNested, NThreadsNonaffine,
 __init__ = ['SymbolRegistry']
 
 
-class SymbolRegistry(object):
+class SymbolRegistry:
 
     """A registry for all the symbols used by an Operator."""
 
@@ -30,7 +30,7 @@ class SymbolRegistry(object):
         # passes, to maximize symbol (especially Dimension) reuse
         self.caches = {}
 
-    def make_name(self, prefix=None):
+    def make_name(self, prefix=None, increment_first=True):
         # By default we're creating a new symbol
         if prefix is None:
             prefix = self._symbol_prefix
@@ -39,6 +39,10 @@ class SymbolRegistry(object):
             counter = self.counters[prefix]
         except KeyError:
             counter = self.counters.setdefault(prefix, generator())
+
+            # Only increment symbol names after the first encountered
+            if not increment_first:
+                return prefix
 
         return "%s%d" % (prefix, counter())
 
