@@ -268,16 +268,15 @@ class SeismicModel(GenericModel):
     qs : array_like or float
         S-wave attenuation.
     """
-    _known_parameters = ['vp', 'damp', 'vs', 'b', 'epsilon', 'delta',
-                         'theta', 'phi', 'qp', 'qs', 'lam', 'mu']
+    _known_parameters = ['vp', 'damp', 'vs', 'b', 'epsilon', 'delta', 'theta', 'phi', 'qp', 'qs', 'lam', 'mu', 'Phi', 'cc', 'Sw']
 
-    def __init__(self, origin, spacing, shape, space_order, vp, nbl=20, fs=False,
+    def __init__(self, origin, spacing, shape, space_order, nbl=20, fs=False,
                  dtype=np.float32, subdomains=(), bcs="mask", grid=None, **kwargs):
         super().__init__(origin, spacing, shape, space_order, nbl,
                          dtype, subdomains, grid=grid, bcs=bcs, fs=fs)
 
         # Initialize physics
-        self._initialize_physics(vp, space_order, **kwargs)
+        self._initialize_physics(space_order, **kwargs)
 
         # User provided dt
         self._dt = kwargs.get('dt')
@@ -287,7 +286,7 @@ class SeismicModel(GenericModel):
         # instanciation only via model.dt_scale = value.
         self._dt_scale = 1
 
-    def _initialize_physics(self, vp, space_order, **kwargs):
+    def _initialize_physics(self, space_order, **kwargs):
         """
         Initialize physical parameters and type of physics from inputs.
         The types of physics supported are:
@@ -297,24 +296,19 @@ class SeismicModel(GenericModel):
         - visco-elastic: [vp, vs, b, qs]
         - vti: [vp, epsilon, delta]
         - tti: [epsilon, delta, theta, phi]
+        - petrophysical: [Phi, cc, Sw]
         """
         params = []
-        # Buoyancy
-        b = kwargs.get('b', 1)
 
         # Initialize elastic with Lame parametrization
         if 'vs' in kwargs:
-            vs = kwargs.pop('vs')
-            self.lam = self._gen_phys_param((vp**2 - 2. * vs**2)/b, 'lam', space_order,
-                                            is_param=True)
-            # Need to add small value to avoid division by zero
-            if isinstance(vs, np.ndarray):
-                vs = vs + 1e-12
-            self.mu = self._gen_phys_param(vs**2 / b, 'mu', space_order, is_param=True,
-                                           avg_mode='harmonic')
-        else:
-            # All other seismic models have at least a velocity
-            self.vp = self._gen_phys_param(vp, 'vp', space_order)
+            vp = kwargs.get('vp', 1)
+            vs = kwargs.get('vs', 1)
+            b = kwargs.get('b', 1) # Buoyancy
+            self.lam = self._gen_phys_param((vp**2 - 2. * vs**2)/b, 'lam', space_order, is_param=True)
+            self.mu = self._gen_phys_param(vs**2 / b, 'mu', space_order, is_param=True)
+            self.rho = self._gen_phys_param(1 / b, 'rho', space_order, is_param=True)
+            
         # Initialize rest of the input physical parameters
         for name in self._known_parameters:
             if kwargs.get(name) is not None:
