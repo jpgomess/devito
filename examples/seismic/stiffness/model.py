@@ -1,7 +1,9 @@
 from examples.seismic import SeismicModel
+from examples.seismic.stiffness.utils import C_Matrix
 
 
-class ISOSeismicModel(SeismicModel):
+class ElasticModel(SeismicModel):
+    _known_parameters = SeismicModel._known_parameters + ['gamma']
 
     def _initialize_physics(self, vp, space_order, **kwargs):
 
@@ -14,7 +16,7 @@ class ISOSeismicModel(SeismicModel):
         try:
             vs = kwargs.pop('vs')
         except:
-            raise Exception("ISOSeismicModel must receive 'vs' as an argument")
+            raise Exception("ElasticModel must receive 'vs' as an argument")
 
         self.lam = self._gen_phys_param((vp**2 - 2. * vs**2)*rho, 'lam', space_order,
                                         is_param=True)
@@ -31,3 +33,17 @@ class ISOSeismicModel(SeismicModel):
                 field = self._gen_phys_param(kwargs.get(name), name, space_order)
                 setattr(self, name, field)
                 params.append(name)
+
+        self._initialize_C_arguments(space_order, **kwargs)
+
+    def _initialize_C_arguments(self, space_order, **kwargs):
+        symbs_C = C_Matrix.symbolic_matrix(self.dim).free_symbols
+        for s in symbs_C:
+            if s.name in kwargs:
+                new_parameter = self._gen_phys_param(kwargs.get(s.name), s.name,
+                                                     space_order, is_param=True)
+                setattr(self, s.name, new_parameter)
+
+                # Mark if the C_Matrix parameters have been initialized
+                if not hasattr(self, "has_C_params"):
+                    self.has_C_params = True
