@@ -10,8 +10,6 @@ class C_Matrix():
     C_matrix_dependency = {'lam-mu':'C_lambda_mu', 'vp-vs-rho':'C_vp_vs_rho', 'Ip-Is-rho':'C_Ip_Is_rho', 'PCS_Han':'C_PCS_Han', 'PCS_VRH':'C_PCS_VRH', 'PCS_KT':'C_PCS_KT'}
 
     def __new__(cls, model, parameters):
-        if getattr(model, "has_C_params", None):
-            return cls.C_from_model(model)
         c_m_gen = cls.C_matrix_gen(parameters)
         return c_m_gen(model)
 
@@ -138,32 +136,6 @@ class C_Matrix():
         M = matriz.subs(subs)
 
         return M
-
-    @classmethod
-    def C_from_model(cls, model):
-        def subsC():
-            dict_C = {'C11': getattr(model, 'C11', 0),
-                      'C22': getattr(model, 'C22', 0),
-                      'C33': getattr(model, 'C33', 0),
-                      'C12': getattr(model, 'C12', 0)}
-            if model.dim == 3:
-                dict_C['C44'] = getattr(model, 'C44', 0)
-                dict_C['C55'] = getattr(model, 'C55', 0)
-                dict_C['C66'] = getattr(model, 'C66', 0)
-                dict_C['C13'] = getattr(model, 'C13', 0)
-                dict_C['C23'] = getattr(model, 'C23', 0)
-
-            return dict_C
-
-        matriz = C_Matrix._matrix_init(model.dim)
-        subs = subsC()
-
-        M = matriz.subs(subs)
-        return M
-
-    @classmethod
-    def symbolic_matrix(cls, dim):
-        return cls._matrix_init(dim)
 
     @classmethod
     def C_lambda_mu(cls, model):
