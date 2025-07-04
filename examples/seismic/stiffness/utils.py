@@ -6,9 +6,17 @@ from sympy import symbols, Matrix, ones
 
 
 class C_Matrix():
-
-    C_matrix_dependency = {'lam-mu': 'C_lambda_mu', 'vp-vs-rho': 'C_vp_vs_rho',
-                           'Ip-Is-rho': 'C_Ip_Is_rho', 'C-elements': 'C_from_model'}
+    
+    C_matrix_dependency = {
+        'lam-mu' : 'C_lambda_mu',
+        'vp-vs-rho' : 'C_vp_vs_rho',
+        'Ip-Is-rho' : 'C_Ip_Is_rho',
+        'C-elements': 'C_from_model',
+        'PCS_Han' : 'C_PCS_Han',
+        'PCS_VRH' : 'C_PCS_VRH',
+        'PCS_KT' : 'C_PCS_KT',
+        'PCS_LinReg' : 'C_PCS_LinReg',
+    }
 
     def __new__(cls, model, parameters):
         c_m_gen = cls.C_matrix_gen(parameters)
@@ -30,7 +38,31 @@ class C_Matrix():
 
         d = dim*2 + dim-2
         Cij = [[cij(i, j) for i in range(1, d)] for j in range(1, d)]
-        return Matrix(Cij)    
+        return Matrix(Cij)     
+
+    @classmethod
+    def C_PCS_LinReg(cls, model):
+        def subs2D():
+            return {'C11': vp2 * rho,
+                    'C22': vp2 * rho,
+                    'C33': vs2 * rho,
+                    'C12': rho * (vp2 - 2 * vs2)}
+
+        matriz = C_Matrix._matrix_init(model.dim)
+
+        Phi = model.Phi
+        cc = model.cc
+
+        vp = 7.72 - 6.71 * Phi - 19.01 * cc
+        vs = 2.01 - 5.07 * Phi + 10.08 * cc
+        rho = -10 + 100 * cc
+
+        vp2, vs2 = vp**2, vs**2
+
+        subs = subs3D() if model.dim == 3 else subs2D()
+        M = matriz.subs(subs)
+
+        return M   
 
     @classmethod
     def C_PCS_Han(cls, model):
