@@ -65,7 +65,10 @@ def elastic_stencil(model, v, tau, forward=True, par='lam-mu'):
 
     damp = model.damp
 
-    rho = model.rho
+    if par == 'Phi-cc':
+        rho = 100 * model.cc -10
+    else:
+        rho = model.rho
 
     C = C_Matrix(model, par)
 
@@ -81,7 +84,6 @@ def elastic_stencil(model, v, tau, forward=True, par='lam-mu'):
         return [u_v, u_t]
 
     else:
-
         """
         Implementation of the elastic wave-equation from:
         1 - Feng and Schuster (2017): Elastic least-squares reverse time migration
@@ -124,12 +126,9 @@ def EqsLamMu(model, sig, u, v, grad_lam, grad_mu, grad_rho, C, space_order=8):
 
 
 def EqsVpVsRho(model, sig, u, v, grad_vp, grad_vs, grad_rho, C, space_order=8):
-    hvp = TimeFunction(name='hvp', grid=model.grid, space_order=space_order,
-                       time_order=1)
-    hvs = TimeFunction(name='hvs', grid=model.grid, space_order=space_order,
-                       time_order=1)
-    hr = TimeFunction(name='hr', grid=model.grid, space_order=space_order,
-                      time_order=1)
+    hvp = TimeFunction(name='hvp', grid=model.grid, space_order=space_order, time_order=1)
+    hvs = TimeFunction(name='hvs', grid=model.grid, space_order=space_order, time_order=1)
+    hr = TimeFunction(name='hr', grid=model.grid, space_order=space_order, time_order=1)
 
     Wvp = gather(0, -C.dvp * S(v))
     Wvs = gather(0, -C.dvs * S(v))
@@ -150,15 +149,9 @@ def EqsVpVsRho(model, sig, u, v, grad_vp, grad_vs, grad_rho, C, space_order=8):
 
 
 def EqsIpIs(model, sig, u, v, grad_Ip, grad_Is, grad_rho, C, space_order=8):
-
-    hIp = TimeFunction(name='hIp', grid=model.grid, space_order=space_order,
-                       time_order=1)
-
-    hIs = TimeFunction(name='hIs', grid=model.grid, space_order=space_order,
-                       time_order=1)
-
-    hr = TimeFunction(name='hr', grid=model.grid, space_order=space_order,
-                      time_order=1)
+    hIp = TimeFunction(name='hIp', grid=model.grid, space_order=space_order, time_order=1)
+    hIs = TimeFunction(name='hIs', grid=model.grid, space_order=space_order, time_order=1)
+    hr = TimeFunction(name='hr', grid=model.grid, space_order=space_order, time_order=1)
 
     WIp = gather(0, C.dIp * S(v))
     WIs = gather(0, C.dIs * S(v))
@@ -176,6 +169,26 @@ def EqsIpIs(model, sig, u, v, grad_Ip, grad_Is, grad_rho, C, space_order=8):
     gradient_rho = Eq(grad_rho, grad_rho - hr)
 
     return [wIp_update, gradient_Ip, wIs_update, gradient_Is, wr_update, gradient_rho]
+
+
+def EqsPhiCc(model, sig, u, v, grad_Phi, grad_cc, C, space_order=8):
+    hPhi = TimeFunction(name='hPhi', grid=model.grid, space_order=space_order, time_order=1)
+    hcc = TimeFunction(name='hcc', grid=model.grid, space_order=space_order, time_order=1)
+
+    drho_dPhi, drho_dcc = 0, 100
+
+    WPhi = gather(drho_dPhi * v.dt, -C.dPhi * S(v))
+    Wcc = gather(drho_dcc * v.dt, -C.dcc * S(v))
+
+    W2 = gather(u, sig)
+
+    wPhi_update = Eq(hPhi, WPhi.T * W2)
+    gradient_Phi = Eq(grad_Phi, grad_Phi + hPhi)
+
+    wcc_update = Eq(hcc, Wcc.T * W2)
+    gradient_cc = Eq(grad_cc, grad_cc + hcc)
+
+    return [wPhi_update, gradient_Phi, wcc_update, gradient_cc]
 
 
 def ForwardOperator(model, geometry, space_order=4, save=False, par='lam-mu', **kwargs):
@@ -198,11 +211,8 @@ def ForwardOperator(model, geometry, space_order=4, save=False, par='lam-mu', **
 
     dswap = kwargs.get("dswap", False)
 
-    v = VectorTimeFunction(name='v', grid=model.grid,
-                           save=geometry.nt if save and not dswap else None,
-                           space_order=space_order, time_order=1)
-    tau = TensorTimeFunction(name='tau', grid=model.grid,
-                             space_order=space_order, time_order=1)
+    v = VectorTimeFunction(name='v', grid=model.grid, save=geometry.nt if save and not dswap else None, space_order=space_order, time_order=1)
+    tau = TensorTimeFunction(name='tau', grid=model.grid, space_order=space_order, time_order=1)
 
     if dswap:
         kwargs.update(get_ooc_config(v, "write", **kwargs))
@@ -230,10 +240,8 @@ def AdjointOperator(model, geometry, space_order=4, par='lam-mu', **kwargs):
         Space discretization order.
     """
 
-    u = VectorTimeFunction(name='u', grid=model.grid, space_order=space_order,
-                           time_order=1)
-    sig = TensorTimeFunction(name='sig', grid=model.grid, space_order=space_order,
-                             time_order=1)
+    u = VectorTimeFunction(name='u', grid=model.grid, space_order=space_order, time_order=1)
+    sig = TensorTimeFunction(name='sig', grid=model.grid, space_order=space_order, time_order=1)
 
     eqn = elastic_stencil(model, u, sig, forward=False, par=par)
 
@@ -265,25 +273,25 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
     # Gradient symbol and wavefield symbols
     grad1 = Function(name='grad1', grid=model.grid)
     grad2 = Function(name='grad2', grid=model.grid)
-    grad3 = Function(name='grad3', grid=model.grid)
+    if par != 'Phi-cc':
+        grad3 = Function(name='grad3', grid=model.grid)
 
-    v = VectorTimeFunction(name='v', grid=model.grid,
-                           save=geometry.nt if save and not dswap else None,
-                           space_order=space_order, time_order=1)
-    u = VectorTimeFunction(name='u', grid=model.grid, space_order=space_order,
-                           time_order=1)
-    sig = TensorTimeFunction(name='sig', grid=model.grid, space_order=space_order,
-                             time_order=1)
-    rec_vx = Receiver(name='rec_vx', grid=model.grid, time_range=geometry.time_axis,
-                      npoint=geometry.nrec)
-    rec_vz = Receiver(name='rec_vz', grid=model.grid, time_range=geometry.time_axis,
-                      npoint=geometry.nrec)
+    v = VectorTimeFunction(name='v', grid=model.grid, save=geometry.nt if save and not dswap else None, space_order=space_order, time_order=1)
+    u = VectorTimeFunction(name='u', grid=model.grid, space_order=space_order, time_order=1)
+    sig = TensorTimeFunction(name='sig', grid=model.grid, space_order=space_order, time_order=1)
+
+    rec_vx = Receiver(name='rec_vx', grid=model.grid, time_range=geometry.time_axis, npoint=geometry.nrec)
+    rec_vz = Receiver(name='rec_vz', grid=model.grid, time_range=geometry.time_axis, npoint=geometry.nrec)
     if model.grid.dim == 3:
         rec_vy = Receiver(name='rec_vy', grid=model.grid, time_range=geometry.time_axis,
                           npoint=geometry.nrec)
 
     s = model.grid.time_dim.spacing
-    rho = model.rho
+    
+    if par == 'Phi-cc':
+        rho = -10 + 100 * model.cc
+    else:
+        rho = model.rho
 
     if dswap:
         kwargs.update(get_ooc_config(v, "read", **kwargs))
@@ -294,8 +302,10 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
     sig = vec(sig)
 
     kernel = kernels[par]
-    gradient_update = kernel(model, sig, u, v, grad1, grad2,
-                             grad3, C, space_order=space_order)
+    if par == 'Phi-cc':
+        gradient_update = kernel(model, sig, u, v, grad1, grad2, C, space_order=space_order)
+    else:
+        gradient_update = kernel(model, sig, u, v, grad1, grad2, grad3, C, space_order=space_order)
 
     # Construct expression to inject receiver values
     rec_term_vx = rec_vx.inject(field=u[0].backward, expr=s*rec_vx/rho)
@@ -318,4 +328,4 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
                     name='GradientElastic', **kwargs)
 
 
-kernels = {'lam-mu': EqsLamMu, 'vp-vs-rho': EqsVpVsRho, 'Ip-Is-rho': EqsIpIs}
+kernels = {'lam-mu': EqsLamMu, 'vp-vs-rho': EqsVpVsRho, 'Ip-Is-rho': EqsIpIs, 'Phi-cc': EqsPhiCc}

@@ -1,9 +1,7 @@
 from devito.tools import memoized_meth
 from devito import VectorTimeFunction, TensorTimeFunction, Function
 from examples.seismic import PointSource
-from examples.seismic.stiffness.operators import (ForwardOperator, AdjointOperator,
-                                                  GradientOperator)
-
+from examples.seismic.stiffness.operators import (ForwardOperator, AdjointOperator, GradientOperator)
 
 class IsoElasticWaveSolver(object):
     """
@@ -25,14 +23,17 @@ class IsoElasticWaveSolver(object):
         self.model = model
         self.model._initialize_bcs(bcs="mask")
         self.geometry = geometry
-
         self.space_order = space_order
         # Cache compiler options
         self._kwargs = kwargs
 
-    @property
-    def dt(self):
-        return self.model.critical_dt
+    # @property
+    def dt(self, par=None):
+        if par == 'Phi-cc':
+            return 1
+        else:
+            return self.model.critical_dt
+
 
     @memoized_meth
     def op_fwd(self, save=None, par=None):
@@ -120,7 +121,7 @@ class IsoElasticWaveSolver(object):
         # Execute operator and return wavefield and receiver data
         summary = self.op_fwd(save, par).apply(src=src, rec_tau=rec_tau,
                                                rec_vx=rec_vx, rec_vz=rec_vz,
-                                               dt=kwargs.pop('dt', self.dt), **kwargs)
+                                               dt=kwargs.pop('dt', self.dt(par=par)), **kwargs)
         if self.model.grid.dim == 3:
             return rec_tau, rec_vx, rec_vy, rec_vz, v, tau, summary
         return rec_tau, rec_vx, rec_vz, v, tau, summary
@@ -177,7 +178,7 @@ class IsoElasticWaveSolver(object):
 
         # Execute operator and return wavefield and receiver data
         summary = self.op_adj(par=par).apply(src=srca, rec=rec,
-                                             dt=kwargs.pop('dt', self.dt), **kwargs)
+                                             dt=kwargs.pop('dt', self.dt(par=par)), **kwargs)
         return srca, u, sig, summary
 
     def jacobian_adjoint(self, rec_vx, rec_vz, v, u=None, sig=None, rec_vy=None,
@@ -218,7 +219,8 @@ class IsoElasticWaveSolver(object):
         # Gradient symbol
         grad1 = grad1 or Function(name='grad1', grid=self.model.grid)
         grad2 = grad2 or Function(name='grad2', grid=self.model.grid)
-        grad3 = grad3 or Function(name='grad3', grid=self.model.grid)
+        if par != 'Phi-cc':
+            grad3 = grad3 or Function(name='grad3', grid=self.model.grid)
 
         u = u or VectorTimeFunction(name="u", grid=self.model.grid,
                                     time_order=1, space_order=self.space_order)
@@ -241,12 +243,13 @@ class IsoElasticWaveSolver(object):
 
         has_rec_p = True if kwargs.get('rec_p', None) else None
         op = self.op_grad(par=par, has_rec_p=has_rec_p)
-        summary = op.apply(rec_vx=rec_vx, rec_vz=rec_vz, grad1=grad1,
-                           grad2=grad2, grad3=grad3,
-                           dt=kwargs.pop('dt', self.dt), **kwargs)
 
-        return grad1, grad2, grad3, summary
-
+        if par == 'Phi-cc':
+            summary = op.apply(rec_vx=rec_vx, rec_vz=rec_vz, grad1=grad1, grad2=grad2, dt=kwargs.pop('dt', self.dt(par=par)), **kwargs)
+            return grad1, grad2, summary
+        else:
+            summary = op.apply(rec_vx=rec_vx, rec_vz=rec_vz, grad1=grad1, grad2=grad2, grad3=grad3, dt=kwargs.pop('dt', self.dt(par=par)), **kwargs)
+            return grad1, grad2, grad3, summary
 
 remove_par = {'lam-mu': ['vp', 'vs', 'Ip', 'Is'], 'vp-vs-rho': ['lam', 'mu', 'Ip', 'Is'],
-              'Ip-Is-rho': ['lam', 'mu']}
+              'Ip-Is-rho': ['lam', 'mu'], 'Phi-cc': ['vp', 'vs', 'rho', 'lam', 'mu', 'Ip', 'Is', 'Sw']}

@@ -12,10 +12,7 @@ class C_Matrix():
         'vp-vs-rho' : 'C_vp_vs_rho',
         'Ip-Is-rho' : 'C_Ip_Is_rho',
         'C-elements': 'C_from_model',
-        'PCS_Han' : 'C_PCS_Han',
-        'PCS_VRH' : 'C_PCS_VRH',
-        'PCS_KT' : 'C_PCS_KT',
-        'PCS_LinReg' : 'C_PCS_LinReg',
+        'Phi-cc' : 'C_Phi_cc',
     }
 
     def __new__(cls, model, parameters):
@@ -41,137 +38,79 @@ class C_Matrix():
         return Matrix(Cij)     
 
     @classmethod
-    def C_PCS_LinReg(cls, model):
+    def C_Phi_cc(cls, model):
+        def subs3D():
+            return None
+        
         def subs2D():
             return {'C11': vp2 * rho,
                     'C22': vp2 * rho,
                     'C33': vs2 * rho,
                     'C12': rho * (vp2 - 2 * vs2)}
 
-        matriz = C_Matrix._matrix_init(model.dim)
-
         Phi = model.Phi
         cc = model.cc
 
-        vp = 7.72 - 6.71 * Phi - 19.01 * cc
-        vs = 2.01 - 5.07 * Phi + 10.08 * cc
-        rho = -10 + 100 * cc
+        a1, a2, a3 = -6.71, -19.01, 7.72
+        b1, b2, b3 = -5.07, 10.08, 2.01
+        c1, c2, c3 = 0, 100, -10
+
+        vp = a1 * Phi + a2 * cc + a3
+        vs = b1 * Phi + b2 * cc + b3
+        rho = c1 * Phi + c2 * cc + c3
 
         vp2, vs2 = vp**2, vs**2
 
+        matrix = C_Matrix._matrix_init(model.dim)
         subs = subs3D() if model.dim == 3 else subs2D()
-        M = matriz.subs(subs)
+        M = matrix.subs(subs)
 
-        return M   
-
-    @classmethod
-    def C_PCS_Han(cls, model):
-        def subs2D():
-            return {'C11': vp2 * rho,
-                    'C22': vp2 * rho,
-                    'C33': vs2 * rho,
-                    'C12': rho * (vp2 - 2 * vs2)}
-
-        matriz = C_Matrix._matrix_init(model.dim)
-
-        Phi = model.Phi
-        cc = model.cc
-        Sw = model.Sw
-
-        rho_c, rho_q, rho_w, rho_h = 2.55, 2.65, 1, 0.1
-        rho_m = cc * (rho_c - rho_q) + rho_q
-        rho_f = Sw * (rho_w - rho_h) + rho_h
-        rho = Phi * (rho_f - rho_m) + rho_m
-
-        a1, a2, a3, b1, b2, b3 = 5.5, 6.9, 2.2, 3.4, 4.7, 1.8
-        vp = a1 - a2 * Phi - a3 * cc
-        vs = b1 - b2 * Phi - b3 * cc
-        vp2 = vp**2
-        vs2 = vs**2
-
-        subs = subs3D() if model.dim == 3 else subs2D()
-        M = matriz.subs(subs)
+        M.dPhi = cls._generate_DPhi(model, a1, b1, c1, vp, vs, rho, vp2, vs2)
+        M.dcc = cls._generate_Dcc(model, a2, b2, c2, vp, vs, rho, vp2, vs2)
 
         return M
+    
+    @staticmethod
+    def _generate_DPhi(model, a1, b1, c1, vp, vs, rho, vp2, vs2):
+        def subs3D():
+            return None
 
-    @classmethod
-    def C_PCS_VRH(cls, model):
         def subs2D():
-            return {'C11': vp2 * rho,
-                    'C22': vp2 * rho,
-                    'C33': vs2 * rho,
-                    'C12': rho * (vp2 - 2 * vs2)}
-
-        matriz = C_Matrix._matrix_init(model.dim)
-
-        Phi = model.Phi
-        cc = model.cc
-        Sw = model.Sw
-
-        rho_c, rho_q, rho_w, rho_h = 2.55, 2.65, 1, 0.1
-        K_c, K_q, K_w, K_h = 21, 37, 2.25, 0.04
-        mu_c, mu_q = 10, 44
-
-        rho_m = cc * (rho_c - rho_q) + rho_q
-        rho_f = Sw * (rho_w - rho_h) + rho_h
-
-        K_v = (1 - Phi) * (cc * (K_c - K_q) + K_q) + Phi * (Sw * (K_w - K_h) + K_h)
-        K_r = 1 / ((1 -Phi) * cc / K_c + (1 - Phi) * (1 - cc) / K_q + Phi * Sw / K_w + Phi * (1 - Sw) / K_h)
-        K_sat = (K_v + K_r) / 2
-
-        mu_v = (1 - Phi) * (cc * (mu_c - mu_q) + mu_q)
-        mu_sat = mu_v / 2
-
-        rho = Phi * (rho_f - rho_m) + rho_m
-        vp = ((K_sat + 4 / 3 * mu_sat) / rho)**(1/2)
-        vs = (mu_sat / rho)**(1/2)
+            return {'C11': df_dPhi,
+                    'C22': df_dPhi,
+                    'C33': dg_dPhi,
+                    'C12': dh_dPhi}
         
-        vp2 = vp**2
-        vs2 = vs**2
+        dvp_dPhi, dvs_dPhi, drho_dPhi = a1, b1, c1
 
+        df_dPhi = drho_dPhi * vp2 + 2 * vp * dvp_dPhi * rho
+        dg_dPhi = drho_dPhi * vs2 + 2 * vs * dvs_dPhi * rho
+        dh_dPhi = drho_dPhi * (vp2 - 2 * vs2) + 2 * (vp * dvp_dPhi - 2 * vs * dvs_dPhi) * rho
+
+        DPhi = C_Matrix._matrix_init(model.dim)
         subs = subs3D() if model.dim == 3 else subs2D()
-        M = matriz.subs(subs)
+        return DPhi.subs(subs)
+    
+    @staticmethod
+    def _generate_Dcc(model, a2, b2, c2, vp, vs, rho, vp2, vs2):
+        def subs3D():
+            return None
 
-        return M
-
-    @classmethod
-    def C_PCS_KT(cls, model):
         def subs2D():
-            return {'C11': vp2 * rho,
-                    'C22': vp2 * rho,
-                    'C33': vs2 * rho,
-                    'C12': rho * (vp2 - 2 * vs2)}
-
-        matriz = C_Matrix._matrix_init(model.dim)
-
-        Phi = model.Phi
-        cc = model.cc
-        Sw = model.Sw
+            return {'C11': df_dcc,
+                    'C22': df_dcc,
+                    'C33': dg_dcc,
+                    'C12': dh_dcc}
         
-        rho_c, rho_q, rho_w, rho_h = 2.55, 2.65, 1, 0.1
-        rho_m = cc * (rho_c - rho_q) + rho_q
-        rho_f = Sw * (rho_w - rho_h) + rho_h
-        rho = Phi * (rho_f - rho_m) + rho_m
+        dvp_dcc, dvs_dcc, drho_dcc = a2, b2, c2
 
-        K_c, K_q, K_w, K_h = 21, 37, 2.25, 0.04
-        mu_c, mu_q = 10, 44
+        df_dcc = drho_dcc * vp2 + 2 * vp * dvp_dcc * rho
+        dg_dcc = drho_dcc * vs2 + 2 * vs * dvs_dcc * rho
+        dh_dcc = drho_dcc * (vp2 - 2 * vs2) + 2 * (vp * dvp_dcc - 2 * vs * dvs_dcc) * rho
 
-        K_m = ((cc * (K_c - K_q) + K_q) + (1 / (cc / K_c + (1 - cc) / K_q))) / 2
-        mu_m = ((cc * (mu_c - mu_q) + mu_q) + (1 / (cc / mu_c + (1 - cc) / mu_q))) / 2
-        K_f = Sw * (K_w - K_h) + K_h
-
-        K_sat = (4 * K_m * mu_m + 3 * K_m * K_f + 4 * mu_m * K_f * Phi - 4 * K_m * mu_m * Phi) / (4 * mu_m + 3 * K_f - 3 * K_f * Phi + 3 * K_m * Phi)
-        mu_sat = mu_m * (9 * K_m + 8 * mu_m) * (1 - Phi) / (9 * K_m + 8 * mu_m + 6 * (K_m + 2 * mu_m) * Phi)
-
-        vp = ((K_sat + 4 / 3 * mu_sat) / rho)**(1/2)
-        vs = (mu_sat / rho)**(1/2)
-        vp2 = vp**2
-        vs2 = vs**2
-
+        DPhi = C_Matrix._matrix_init(model.dim)
         subs = subs3D() if model.dim == 3 else subs2D()
-        M = matriz.subs(subs)
-
-        return M
+        return DPhi.subs(subs)
 
     @classmethod
     def C_from_model(cls, model):
@@ -221,12 +160,12 @@ class C_Matrix():
                     'C33': mu,
                     'C12': lmbda}
 
-        matriz = C_Matrix._matrix_init(model.dim)
+        matrix = C_Matrix._matrix_init(model.dim)
         lmbda = model.lam
         mu = model.mu
 
         subs = subs3D() if model.dim == 3 else subs2D()
-        M = matriz.subs(subs)
+        M = matrix.subs(subs)
 
         M.dlam = cls._generate_Dlam(model)
         M.dmu = cls._generate_Dmu(model)

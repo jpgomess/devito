@@ -5,7 +5,7 @@ from examples.seismic.stiffness.utils import C_Matrix
 class ElasticModel(SeismicModel):
     _known_parameters = SeismicModel._known_parameters + ['gamma']
 
-    def _initialize_physics(self, vp, space_order, **kwargs):
+    def _initialize_physics(self, space_order, **kwargs):
         # list o physical parameters there are mandatory for ElasticModel initialization
         mandatory_args = ('vs', 'rho')
 
@@ -16,6 +16,7 @@ class ElasticModel(SeismicModel):
         if missing_args:
             raise Exception(f"ElasticModel must receive {', '.join(missing_args)} as argument(s)")
 
+        vp = kwargs.get('vp')
         vs = kwargs.pop('vs')
         rho = kwargs.get('rho')
 
