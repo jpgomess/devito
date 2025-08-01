@@ -29,8 +29,8 @@ class IsoElasticWaveSolver(object):
 
     # @property
     def dt(self, par=None):
-        if par == 'Phi-cc':
-            return 1
+        if par.startswith('petro'):
+            return self._kwargs.pop('dt', 1)
         else:
             return self.model.critical_dt
 
@@ -121,7 +121,7 @@ class IsoElasticWaveSolver(object):
         # Execute operator and return wavefield and receiver data
         summary = self.op_fwd(save, par).apply(src=src, rec_tau=rec_tau,
                                                rec_vx=rec_vx, rec_vz=rec_vz,
-                                               dt=kwargs.pop('dt', self.dt(par=par)), **kwargs)
+                                               dt=self.dt(par=par), **kwargs)
         if self.model.grid.dim == 3:
             return rec_tau, rec_vx, rec_vy, rec_vz, v, tau, summary
         return rec_tau, rec_vx, rec_vz, v, tau, summary
@@ -178,7 +178,7 @@ class IsoElasticWaveSolver(object):
 
         # Execute operator and return wavefield and receiver data
         summary = self.op_adj(par=par).apply(src=srca, rec=rec,
-                                             dt=kwargs.pop('dt', self.dt(par=par)), **kwargs)
+                                             dt=self.dt(par=par), **kwargs)
         return srca, u, sig, summary
 
     def jacobian_adjoint(self, rec_vx, rec_vz, v, u=None, sig=None, rec_vy=None,
@@ -251,5 +251,12 @@ class IsoElasticWaveSolver(object):
             summary = op.apply(rec_vx=rec_vx, rec_vz=rec_vz, grad1=grad1, grad2=grad2, grad3=grad3, dt=kwargs.pop('dt', self.dt(par=par)), **kwargs)
             return grad1, grad2, grad3, summary
 
-remove_par = {'lam-mu': ['vp', 'vs', 'Ip', 'Is'], 'vp-vs-rho': ['lam', 'mu', 'Ip', 'Is'],
-              'Ip-Is-rho': ['lam', 'mu'], 'Phi-cc': ['vp', 'vs', 'rho', 'lam', 'mu', 'Ip', 'Is', 'Sw']}
+remove_par = {
+    'lam-mu': ['vp', 'vs', 'Ip', 'Is'],
+    'vp-vs-rho': ['lam', 'mu', 'Ip', 'Is'],
+    'Ip-Is-rho': ['lam', 'mu'],
+    'petro-linreg': ['vp', 'vs', 'rho', 'lam', 'mu', 'Ip', 'Is', 'Sw'],
+    'petro-han': ['vp', 'vs', 'rho', 'lam', 'mu', 'Ip', 'Is', 'Sw'],
+    'petro-vrh': ['vp', 'vs', 'rho', 'lam', 'mu', 'Ip', 'Is', 'Sw'],
+    'petro-kt': ['vp', 'vs', 'rho', 'lam', 'mu', 'Ip', 'Is', 'Sw'],
+}

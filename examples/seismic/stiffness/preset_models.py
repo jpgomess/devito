@@ -2,6 +2,10 @@ import numpy as np
 
 from examples.seismic.stiffness.model import ElasticModel
 
+import segyio
+import cv2
+from examples.seismic import Model
+
 __all__ = ['demo_model']
 
 
@@ -18,8 +22,8 @@ def demo_model(preset, **kwargs):
     """
     space_order = kwargs.pop('space_order', 2)
     shape = kwargs.pop('shape', (101, 101))
-    spacing = kwargs.pop('spacing', tuple([10. for _ in shape]))
-    origin = kwargs.pop('origin', tuple([0. for _ in shape]))
+    spacing = kwargs.pop('spacing', (10, 10))
+    origin = kwargs.pop('origin', (0, 0))
     nbl = kwargs.pop('nbl', 10)
     dtype = kwargs.pop('dtype', np.float32)
     vp = kwargs.pop('vp', 1.5)
@@ -59,5 +63,42 @@ def demo_model(preset, **kwargs):
                             origin=origin, shape=shape,
                             dtype=dtype, spacing=spacing, nbl=nbl, **kwargs)
 
+    elif preset.lower() in ['marmo-petro']:
+        model_dir = kwargs.pop('dir')
+        down_scale = kwargs.pop('down_scale', 16)
+        
+        marmousi = {}
+
+        for param in ['vp', 'vs', 'rho']:
+            file = segyio.open(f'{model_dir}/marmousi_{param}.segy')
+            
+            shape = (len(file.samples), len(file.ilines))
+            arr = np.zeros(shape)
+
+            down_shape = (np.asarray(shape) / down_scale).astype('int16')
+
+            for i, trace in enumerate(file.trace):
+                arr[:, i] = trace
+
+            arr_down = cv2.resize(arr, (down_shape[1], down_shape[0]), interpolation=cv2.INTER_AREA)
+
+            marmousi[param] = arr_down
+            
+        nx, nz = down_shape[1], down_shape[0]
+        dx, dz = int(1.25 * down_scale), int(1.25 * down_scale)
+
+        marmousi['vp'] /= 1000
+        marmousi['vs'] /= 1000
+        
+        cc = 0.1 + 0.01 * marmousi['rho']
+
+        Phi1 = (marmousi['vp'] - 5.59 + 2.18 * cc) / -6.93
+        Phi2 = (marmousi['vs'] - 3.52 + 1.89 * cc) / -4.91
+        Phi = (Phi1 + Phi2)/2
+
+        Sw = np.ones_like(Phi1)
+
+        return Model(Phi=Phi[25:].T, cc=cc[25:].T, Sw=Sw[25:].T, origin=origin, shape=(nx,nz-25), spacing=(dx,dz), space_order=space_order, nbl=nbl, bcs='damp')
+
     else:
-        raise ValueError("Unknown model preset name")
+        raise ValueError(f"Unknown model preset name: {preset}")

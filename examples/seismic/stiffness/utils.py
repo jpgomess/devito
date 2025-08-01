@@ -12,7 +12,10 @@ class C_Matrix():
         'vp-vs-rho' : 'C_vp_vs_rho',
         'Ip-Is-rho' : 'C_Ip_Is_rho',
         'C-elements': 'C_from_model',
-        'Phi-cc' : 'C_Phi_cc',
+        'petro-linreg' : 'C_petro_linreg',
+        'petro-han' : 'C_petro_han',
+        'petro-vrh' : 'C_petro_vrh',
+        'petro-kt' : 'C_petro_kt',
     }
 
     def __new__(cls, model, parameters):
@@ -23,7 +26,7 @@ class C_Matrix():
     def C_matrix_gen(cls, parameters):
         return getattr(cls, cls.C_matrix_dependency[parameters])
 
-    def _matrix_init(dim, asymmetrical=False):
+    def _matrix_init(dim, asymmetrical=False):                                                  # type:ignore
         def cij(ii, jj):
             if not asymmetrical:
                 # It reorders the indices so that the smaller one comes first
@@ -33,12 +36,12 @@ class C_Matrix():
                 return symbols('C%s%s' % (ii, jj))
             return 0
 
-        d = dim*2 + dim-2
+        d = dim*2 + dim-2                                                                       # type:ignore
         Cij = [[cij(i, j) for i in range(1, d)] for j in range(1, d)]
         return Matrix(Cij)     
 
     @classmethod
-    def C_Phi_cc(cls, model):
+    def C_petro_linreg(cls, model):
         def subs3D():
             return None
         
@@ -48,16 +51,7 @@ class C_Matrix():
                     'C33': vs2 * rho,
                     'C12': rho * (vp2 - 2 * vs2)}
 
-        Phi = model.Phi
-        cc = model.cc
-
-        a1, a2, a3 = -6.71, -19.01, 7.72
-        b1, b2, b3 = -5.07, 10.08, 2.01
-        c1, c2, c3 = 0, 100, -10
-
-        vp = a1 * Phi + a2 * cc + a3
-        vs = b1 * Phi + b2 * cc + b3
-        rho = c1 * Phi + c2 * cc + c3
+        vp, vs, rho = get_elastic_linreg(model)
 
         vp2, vs2 = vp**2, vs**2
 
@@ -65,52 +59,124 @@ class C_Matrix():
         subs = subs3D() if model.dim == 3 else subs2D()
         M = matrix.subs(subs)
 
-        M.dPhi = cls._generate_DPhi(model, a1, b1, c1, vp, vs, rho, vp2, vs2)
-        M.dcc = cls._generate_Dcc(model, a2, b2, c2, vp, vs, rho, vp2, vs2)
+        # M.dPhi = cls._generate_DPhi(model, a1, b1, c1, vp, vs, rho, vp2, vs2)
+        # M.dcc = cls._generate_Dcc(model, a2, b2, c2, vp, vs, rho, vp2, vs2)
 
         return M
     
-    @staticmethod
-    def _generate_DPhi(model, a1, b1, c1, vp, vs, rho, vp2, vs2):
+    @classmethod
+    def C_petro_han(cls, model):
         def subs3D():
             return None
-
-        def subs2D():
-            return {'C11': df_dPhi,
-                    'C22': df_dPhi,
-                    'C33': dg_dPhi,
-                    'C12': dh_dPhi}
         
-        dvp_dPhi, dvs_dPhi, drho_dPhi = a1, b1, c1
+        def subs2D():
+            return {'C11': vp2 * rho,
+                    'C22': vp2 * rho,
+                    'C33': vs2 * rho,
+                    'C12': rho * (vp2 - 2 * vs2)}
 
-        df_dPhi = drho_dPhi * vp2 + 2 * vp * dvp_dPhi * rho
-        dg_dPhi = drho_dPhi * vs2 + 2 * vs * dvs_dPhi * rho
-        dh_dPhi = drho_dPhi * (vp2 - 2 * vs2) + 2 * (vp * dvp_dPhi - 2 * vs * dvs_dPhi) * rho
+        vp, vs, rho = get_elastic_Han(model)
 
-        DPhi = C_Matrix._matrix_init(model.dim)
+        vp2, vs2 = vp**2, vs**2
+
+        matrix = C_Matrix._matrix_init(model.dim)
         subs = subs3D() if model.dim == 3 else subs2D()
-        return DPhi.subs(subs)
+        M = matrix.subs(subs)
+
+        # M.dPhi = cls._generate_DPhi(model, a1, b1, c1, vp, vs, rho, vp2, vs2)
+        # M.dcc = cls._generate_Dcc(model, a2, b2, c2, vp, vs, rho, vp2, vs2)
+
+        return M
     
-    @staticmethod
-    def _generate_Dcc(model, a2, b2, c2, vp, vs, rho, vp2, vs2):
+    @classmethod
+    def C_petro_vrh(cls, model):
         def subs3D():
             return None
-
-        def subs2D():
-            return {'C11': df_dcc,
-                    'C22': df_dcc,
-                    'C33': dg_dcc,
-                    'C12': dh_dcc}
         
-        dvp_dcc, dvs_dcc, drho_dcc = a2, b2, c2
+        def subs2D():
+            return {'C11': vp2 * rho,
+                    'C22': vp2 * rho,
+                    'C33': vs2 * rho,
+                    'C12': rho * (vp2 - 2 * vs2)}
 
-        df_dcc = drho_dcc * vp2 + 2 * vp * dvp_dcc * rho
-        dg_dcc = drho_dcc * vs2 + 2 * vs * dvs_dcc * rho
-        dh_dcc = drho_dcc * (vp2 - 2 * vs2) + 2 * (vp * dvp_dcc - 2 * vs * dvs_dcc) * rho
+        vp, vs, rho = get_elastic_VRH(model)
 
-        DPhi = C_Matrix._matrix_init(model.dim)
+        vp2, vs2 = vp**2, vs**2
+
+        matrix = C_Matrix._matrix_init(model.dim)
         subs = subs3D() if model.dim == 3 else subs2D()
-        return DPhi.subs(subs)
+        M = matrix.subs(subs)
+
+        # M.dPhi = cls._generate_DPhi(model, a1, b1, c1, vp, vs, rho, vp2, vs2)
+        # M.dcc = cls._generate_Dcc(model, a2, b2, c2, vp, vs, rho, vp2, vs2)
+
+        return M
+    
+    @classmethod
+    def C_petro_kt(cls, model):
+        def subs3D():
+            return None
+        
+        def subs2D():
+            return {'C11': vp2 * rho,
+                    'C22': vp2 * rho,
+                    'C33': vs2 * rho,
+                    'C12': rho * (vp2 - 2 * vs2)}
+
+        vp, vs, rho = get_elastic_KT(model)
+
+        vp2, vs2 = vp**2, vs**2
+
+        matrix = C_Matrix._matrix_init(model.dim)
+        subs = subs3D() if model.dim == 3 else subs2D()
+        M = matrix.subs(subs)
+
+        # M.dPhi = cls._generate_DPhi(model, a1, b1, c1, vp, vs, rho, vp2, vs2)
+        # M.dcc = cls._generate_Dcc(model, a2, b2, c2, vp, vs, rho, vp2, vs2)
+
+        return M
+
+    # @staticmethod
+    # def _generate_DPhi(model, a1, b1, c1, vp, vs, rho, vp2, vs2):
+    #     def subs3D():
+    #         return None
+
+    #     def subs2D():
+    #         return {'C11': df_dPhi,
+    #                 'C22': df_dPhi,
+    #                 'C33': dg_dPhi,
+    #                 'C12': dh_dPhi}
+        
+    #     dvp_dPhi, dvs_dPhi, drho_dPhi = a1, b1, c1
+
+    #     df_dPhi = drho_dPhi * vp2 + 2 * vp * dvp_dPhi * rho
+    #     dg_dPhi = drho_dPhi * vs2 + 2 * vs * dvs_dPhi * rho
+    #     dh_dPhi = drho_dPhi * (vp2 - 2 * vs2) + 2 * (vp * dvp_dPhi - 2 * vs * dvs_dPhi) * rho
+
+    #     DPhi = C_Matrix._matrix_init(model.dim)
+    #     subs = subs3D() if model.dim == 3 else subs2D()
+    #     return DPhi.subs(subs)
+    
+    # @staticmethod
+    # def _generate_Dcc(model, a2, b2, c2, vp, vs, rho, vp2, vs2):
+    #     def subs3D():
+    #         return None
+
+    #     def subs2D():
+    #         return {'C11': df_dcc,
+    #                 'C22': df_dcc,
+    #                 'C33': dg_dcc,
+    #                 'C12': dh_dcc}
+        
+    #     dvp_dcc, dvs_dcc, drho_dcc = a2, b2, c2
+
+    #     df_dcc = drho_dcc * vp2 + 2 * vp * dvp_dcc * rho
+    #     dg_dcc = drho_dcc * vs2 + 2 * vs * dvs_dcc * rho
+    #     dh_dcc = drho_dcc * (vp2 - 2 * vs2) + 2 * (vp * dvp_dcc - 2 * vs * dvs_dcc) * rho
+
+    #     DPhi = C_Matrix._matrix_init(model.dim)
+    #     subs = subs3D() if model.dim == 3 else subs2D()
+    #     return DPhi.subs(subs)
 
     @classmethod
     def C_from_model(cls, model):
@@ -495,7 +561,6 @@ def tensor(self):
     func = tens_func(self)
     return func._new(M)
 
-
 def gather(a1, a2):
 
     expected_a1_types = [int, VectorFunction, VectorTimeFunction]
@@ -514,7 +579,7 @@ def gather(a1, a2):
         a1_m = Matrix(a1)
 
     if type(a2) is int:
-        ndim = len(a1.space_dimensions)
+        ndim = len(a1.space_dimensions)                                                 # type:ignore
         a2_m = Matrix([ones((3*ndim-3), 1)*a2])
     else:
         a2_m = Matrix(a2)
@@ -525,3 +590,84 @@ def gather(a1, a2):
         a2_m = a2_m.T
 
     return Matrix.vstack(a1_m, a2_m)
+
+# Rock-Physics models
+def get_elastic_linreg(model):
+    Phi = model.Phi
+    cc = model.cc
+
+    a1, a2, a3 = -6.71, -19.01, 7.72
+    b1, b2, b3 = -5.07, 10.08, 2.01
+    c1, c2, c3 = 0, 100, -10
+
+    vp = a1 * Phi + a2 * cc + a3
+    vs = b1 * Phi + b2 * cc + b3
+    rho = c1 * Phi + c2 * cc + c3
+
+    return vp, vs, rho
+
+def get_elastic_Han(model):
+    Phi = model.Phi
+    cc = model.cc
+    Sw = model.Sw
+
+    rho_c, rho_q, rho_w, rho_h = 2.55, 2.65, 1, 0.1
+    rho_m = cc * (rho_c - rho_q) + rho_q
+    rho_f = Sw * (rho_w - rho_h) + rho_h
+    rho = Phi * (rho_f - rho_m) + rho_m
+
+    a1, a2, a3, b1, b2, b3 = 5.5, 6.9, 2.2, 3.4, 4.7, 1.8
+    vp = a1 - a2 * Phi - a3 * cc
+    vs = b1 - b2 * Phi - b3 * cc
+
+    return vp, vs, rho
+
+def get_elastic_VRH(model):
+    Phi = model.Phi
+    cc = model.cc
+    Sw = model.Sw
+
+    rho_c, rho_q, rho_w, rho_h = 2.55, 2.65, 1, 0.1
+    K_c, K_q, K_w, K_h = 21, 37, 2.25, 0.04
+    mu_c, mu_q = 10, 44
+
+    rho_m = cc * (rho_c - rho_q) + rho_q
+    rho_f = Sw * (rho_w - rho_h) + rho_h
+
+    K_v = (1 - Phi) * (cc * (K_c - K_q) + K_q) + Phi * (Sw * (K_w - K_h) + K_h)
+    K_r = 1 / ((1 -Phi) * cc / K_c + (1 - Phi) * (1 - cc) / K_q + Phi * Sw / K_w + Phi * (1 - Sw) / K_h)
+    K_sat = (K_v + K_r) / 2
+
+    mu_v = (1 - Phi) * (cc * (mu_c - mu_q) + mu_q)
+    mu_sat = mu_v / 2
+
+    rho = Phi * (rho_f - rho_m) + rho_m
+    vp = ((K_sat + 4 / 3 * mu_sat) / rho)**(1/2)
+    vs = (mu_sat / rho)**(1/2)
+
+    return vp, vs, rho
+
+def get_elastic_KT(model):
+    Phi = model.Phi
+    cc = model.cc
+    Sw = model.Sw
+
+    rho_c, rho_q, rho_w, rho_h = 2.55, 2.65, 1, 0.1
+    rho_m = cc * (rho_c - rho_q) + rho_q
+    rho_f = Sw * (rho_w - rho_h) + rho_h
+    rho = Phi * (rho_f - rho_m) + rho_m
+
+    K_c, K_q, K_w, K_h = 21, 37, 2.25, 0.04
+    mu_c, mu_q = 10, 44
+
+    K_m = ((cc * (K_c - K_q) + K_q) + (1 / (cc / K_c + (1 - cc) / K_q))) / 2
+    mu_m = ((cc * (mu_c - mu_q) + mu_q) + (1 / (cc / mu_c + (1 - cc) / mu_q))) / 2
+    K_f = Sw * (K_w - K_h) + K_h
+
+    K_sat = (4 * K_m * mu_m + 3 * K_m * K_f + 4 * mu_m * K_f * Phi - 4 * K_m * mu_m * Phi) / (4 * mu_m + 3 * K_f - 3 * K_f * Phi + 3 * K_m * Phi)
+    mu_sat = mu_m * (9 * K_m + 8 * mu_m) * (1 - Phi) / (9 * K_m + 8 * mu_m + 6 * (K_m + 2 * mu_m) * Phi)
+
+    vp = ((K_sat + 4 / 3 * mu_sat) / rho)**(1/2)
+    vs = (mu_sat / rho)**(1/2)
+
+    return vp, vs, rho

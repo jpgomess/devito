@@ -24,7 +24,7 @@ def setup_geometry(model, tn, f0=0.010, interpolation='linear', **kwargs):
     r = kwargs.get('r', _default_radius[interpolation])
     geometry = AcquisitionGeometry(model, rec_coordinates, src_coordinates,
                                    t0=0.0, tn=tn, src_type='Ricker', f0=f0,
-                                   interpolation=interpolation, r=r)
+                                   interpolation=interpolation, r=r, **kwargs)
 
     return geometry
 
@@ -87,7 +87,7 @@ class AcquisitionGeometry(Pickable):
 
         self._grid = model.grid
         self._model = model
-        self._dt = model.critical_dt
+        self._dt = kwargs.get('dt')#, model.critical_dt)
         self._t0 = t0
         self._tn = tn
         self._interpolation = kwargs.get('interpolation', 'linear')

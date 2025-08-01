@@ -9,12 +9,17 @@ from examples.seismic import setup_geometry, seismic_args
 def iso_elastic_setup(shape=(50, 50), spacing=(15.0, 15.0), tn=500., space_order=4,
                       nbl=10, constant=False, **kwargs):
 
-    preset = 'constant-elastic' if constant else 'layers-elastic'
-    model = demo_model(preset, space_order=space_order, shape=shape, nbl=nbl,
-                       dtype=kwargs.pop('dtype', np.float32), spacing=spacing)
+    # preset = 'constant-elastic' if constant else 'layers-elastic'
+    preset = kwargs.pop('preset', 'constant-elastic')
+    # print(kwargs.pop('model'), preset)
+    model = kwargs.pop(
+        'model',
+        demo_model(preset, space_order=space_order, shape=shape, nbl=nbl,
+                   dtype=kwargs.pop('dtype', np.float32), spacing=spacing, **kwargs)
+    )
 
     # Source and receiver geometries
-    geometry = setup_geometry(model, tn)
+    geometry = setup_geometry(model, tn, **kwargs)
 
     # Create solver object to provide relevant operators
     solver = IsoElasticWaveSolver(model, geometry, space_order=space_order, **kwargs)

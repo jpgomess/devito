@@ -2,7 +2,7 @@ from devito import (Eq, Operator, VectorTimeFunction, TensorTimeFunction,
                     Function, TimeFunction)
 from devito import solve
 from examples.seismic import PointSource, Receiver
-from examples.seismic.stiffness.utils import D, S, vec, C_Matrix, gather
+from examples.seismic.stiffness.utils import *
 from examples.seismic.utils import get_ooc_config
 
 
@@ -28,19 +28,19 @@ def src_rec(v, tau, model, geometry, forward=True):
     if forward:
 
         # The source injection term
-        src_xx = src.inject(field=tau[0].forward, expr=src * s)
-        src_zz = src.inject(field=tau[1].forward, expr=src * s)
+        src_xx = src.inject(field=tau[0].forward, expr=src * s)                 # type:ignore
+        src_zz = src.inject(field=tau[1].forward, expr=src * s)                 # type:ignore
         src_expr = src_xx + src_zz
         if model.grid.dim == 3:
-            src_yy = src.inject(field=tau[2].forward, expr=src * s)
+            src_yy = src.inject(field=tau[2].forward, expr=src * s)             # type:ignore
             src_expr += src_yy
         # Create interpolation expression for receivers
         rec_term_vx = rec_vx.interpolate(expr=v[0])
         rec_term_vz = rec_vz.interpolate(expr=v[-1])
-        expr = tau[0] + tau[1]
+        expr = tau[0] + tau[1]                                                  # type:ignore
         rec_expr = rec_term_vx + rec_term_vz
         if model.grid.dim == 3:
-            expr += tau[2]
+            expr += tau[2]                                                      # type:ignore
             rec_term_vy = rec_vy.interpolate(expr=v[1])
             rec_expr += rec_term_vy
         rec_term_tau = rec.interpolate(expr=expr)
@@ -48,13 +48,13 @@ def src_rec(v, tau, model, geometry, forward=True):
 
     else:
         # Construct expression to inject receiver values
-        rec_xx = rec.inject(field=tau[0].backward, expr=rec*s)
-        rec_zz = rec.inject(field=tau[1].backward, expr=rec*s)
+        rec_xx = rec.inject(field=tau[0].backward, expr=rec*s) # type:ignore
+        rec_zz = rec.inject(field=tau[1].backward, expr=rec*s) # type:ignore
         rec_expr = rec_xx + rec_zz
-        expr = tau[0] + tau[1]
+        expr = tau[0] + tau[1] # type:ignore
         if model.grid.dim == 3:
-            rec_expr += rec.inject(field=tau[2].backward, expr=rec*s)
-            expr += tau[2]
+            rec_expr += rec.inject(field=tau[2].backward, expr=rec*s) # type:ignore
+            expr += tau[2] # type:ignore
         # Create interpolation expression for the adjoint-source
         src_expr = src.interpolate(expr=expr)
 
@@ -62,11 +62,16 @@ def src_rec(v, tau, model, geometry, forward=True):
 
 
 def elastic_stencil(model, v, tau, forward=True, par='lam-mu'):
-
     damp = model.damp
 
-    if par == 'Phi-cc':
-        rho = 100 * model.cc -10
+    if par == 'petro-linreg':
+        rho = get_elastic_linreg(model)[-1]
+    elif par == 'petro-han':
+        rho = get_elastic_Han(model)[-1]
+    elif par == 'petro-vrh':
+        rho = get_elastic_VRH(model)[-1]
+    elif par == 'petro-kt':
+        rho = get_elastic_KT(model)[-1]
     else:
         rho = model.rho
 
@@ -308,20 +313,20 @@ def GradientOperator(model, geometry, space_order=4, save=True, par='lam-mu', **
         gradient_update = kernel(model, sig, u, v, grad1, grad2, grad3, C, space_order=space_order)
 
     # Construct expression to inject receiver values
-    rec_term_vx = rec_vx.inject(field=u[0].backward, expr=s*rec_vx/rho)
-    rec_term_vz = rec_vz.inject(field=u[-1].backward, expr=s*rec_vz/rho)
+    rec_term_vx = rec_vx.inject(field=u[0].backward, expr=s*rec_vx/rho) # type:ignore
+    rec_term_vz = rec_vz.inject(field=u[-1].backward, expr=s*rec_vz/rho) # type:ignore
     rec_expr = rec_term_vx + rec_term_vz
     if model.grid.dim == 3:
-        rec_expr += rec_vy.inject(field=u[1].backward, expr=s*rec_vy/rho)
+        rec_expr += rec_vy.inject(field=u[1].backward, expr=s*rec_vy/rho) # type:ignore
 
     if kwargs.pop('has_rec_p'):
         rec_p = Receiver(name='rec_p', grid=model.grid, time_range=geometry.time_axis,
                          npoint=geometry.nrec)
-        rec_term_sigx = rec_p.inject(field=sig[0].backward, expr=s*rec_p/rho)
-        rec_term_sigz = rec_p.inject(field=sig[1].backward, expr=s*rec_p/rho)
+        rec_term_sigx = rec_p.inject(field=sig[0].backward, expr=s*rec_p/rho) # type:ignore
+        rec_term_sigz = rec_p.inject(field=sig[1].backward, expr=s*rec_p/rho) # type:ignore
         rec_expr += rec_term_sigx + rec_term_sigz
         if model.grid.dim == 3:
-            rec_expr += rec_p.inject(field=sig[2].backward, expr=rec_p/rho)
+            rec_expr += rec_p.inject(field=sig[2].backward, expr=rec_p/rho) # type:ignore
 
     # Substitute spacing terms to reduce flops
     return Operator(eqn + rec_expr + gradient_update, subs=model.spacing_map,
